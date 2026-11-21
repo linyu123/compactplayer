@@ -41,6 +41,18 @@ macOS 桌面启动可用 `bash scripts/run-app.sh /absolute/path/video.mkv`，�
 
 ## 应用图标
 
+## 界面优化预览
+
+分支 `codex/player-ui-refresh`：56px 顶部工具栏，功能按钮全部展开，保持直接操作。
+底部按钮合并为一排，快进、快退和前后跳转均可直接点击，时长位于最右侧。
+播放键统一承担播放/停止/重播：停止保留当前位置，再点击继续播放；播放结束后从头重播。
+移除独立停止和静音按钮，音量仍可通过滑块调整。
+右侧列表支持当前项高亮、长文件名省略及完整路径悬停提示。
+空白页显示应用图标；底部保留播放状态和音频输出提示。
+最小窗口调整为 960×540，默认 1120×700。
+
+### 图标资源
+
 图标采用深蓝圆角底、青蓝渐变播放键及进度弧线，源设计为 `scripts/generate-icon.swift`。
 运行 `bash scripts/generate-icon.sh` 生成 `resources/AppIcon.png` 和完整尺寸的 `resources/AppIcon.icns`。
 开发 app 的启动脚本会复制图标并通过 Info.plist 配置，重新打包时也需要复制到 Contents/Resources/。
