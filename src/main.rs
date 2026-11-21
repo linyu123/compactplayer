@@ -37,6 +37,16 @@ impl Player {
         let path = std::env::var_os("COMPACT_PLAYER_LIBMPV")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
+                if let Ok(executable) = std::env::current_exe() {
+                    if let Some(contents) =
+                        executable.parent().and_then(|directory| directory.parent())
+                    {
+                        let bundled = contents.join("Frameworks/libmpv.dylib");
+                        if bundled.is_file() {
+                            return bundled;
+                        }
+                    }
+                }
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("runtime/libmpv-libs_v0.7.3_macos-arm64-video-default/libmpv.dylib")
             });
