@@ -20,6 +20,28 @@ GUI 已切换为进程内 libmpv，通过软件渲染 API 将 RGBA 帧上传到 
 无需安装 mpv 命令行程序或 Homebrew。可用 `cargo run -- /absolute/path/video.mkv` 直接打开视频。
 macOS 桌面启动可用 `bash scripts/run-app.sh /absolute/path/video.mkv`，它生成开发用 app 外壳并启动。
 该外壳仍依赖当前项目的 runtime/ 路径，不是可分发安装包。
+
+执行 `bash scripts/package-app.sh` 构建自带运行库的 Release 应用与 DMG，输出在 dist/。
+默认按当前处理器打包：Apple Silicon 要求 macOS 14+，Intel 要求 macOS 12+；使用本地临时签名，未做 Apple 公证。
+打开 DMG 后将“轻巧播放器”拖入 Applications；应用优先加载包内 Frameworks/ 下的 libmpv。
+
+### Intel / macOS 12 适配
+
+分支 `codex/intel-macos12` 支持独立构建 Intel 包。
+
+```bash
+rustup target add x86_64-apple-darwin
+bash scripts/install-libmpv.sh x86_64
+bash scripts/package-app.sh x86_64
+```
+
+输出为 `dist/CompactPlayer-0.1.0-x86_64.dmg`，应用位于 `dist/x86_64/轻巧播放器.app`。
+构建时设置 `MACOSX_DEPLOYMENT_TARGET=12.0`，应用声明最低 macOS 12.0。
+Intel 运行库使用同一发行的 amd64 构建，下载按固定 SHA-256 校验。
+在 Apple Silicon 上可交叉编译；运行 Intel 二进制需要 Rosetta。
+最低版本声明和本机测试不能替代 Monterey Intel 真机验证。
+已在 Apple Silicon 的 Rosetta 下通过包内 Intel libmpv 的彩色帧渲染、暂停、继续、跳转及停止检查，DMG 和应用签名校验通过。
+Apple Silicon 包使用 `bash scripts/package-app.sh arm64`，两种包和运行库分别存放。
 默认使用项目 runtime/ 中的运行库，也可通过 `COMPACT_PLAYER_LIBMPV` 环境变量指定完整动态库路径。
 顶部 Runtime 按钮可切换 libmpv.dylib；同目录需要包含配套依赖库，选择仅在本次运行有效。
 
