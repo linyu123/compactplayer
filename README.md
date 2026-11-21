@@ -51,7 +51,7 @@ macOS 桌面启动可用 `bash scripts/run-app.sh /absolute/path/video.mkv`，�
 
 ## 应用打包
 
-主干独立应用打包：`bash scripts/package-app.sh`，输出 `dist/CompactPlayer-0.1.1-main-arm64.dmg`。
+主干独立应用打包：`bash scripts/package-app.sh`，输出 `dist/CompactPlayer-0.1.2-main-arm64.dmg`。
 此包适用于 Apple Silicon、macOS 14+，包含播放运行库和图标，使用本地临时签名，尚未公证。
 
 ## 应用图标

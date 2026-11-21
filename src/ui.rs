@@ -67,7 +67,22 @@ impl Player {
                             }
                         }
                     }
-                    ui.toggle_value(&mut self.show_playlist, "播放列表");
+                    let fullscreen =
+                        ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
+                    let playlist_label = if fullscreen {
+                        "全屏隐藏列表"
+                    } else if self.show_playlist {
+                        "隐藏列表"
+                    } else {
+                        "显示列表"
+                    };
+                    if ui
+                        .add_enabled(!fullscreen, egui::Button::new(playlist_label))
+                        .on_disabled_hover_text("退出全屏后恢复播放列表原来的状态")
+                        .clicked()
+                    {
+                        self.show_playlist = !self.show_playlist;
+                    }
                     if ui.button("字幕").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_title("加载字幕文件")
@@ -234,7 +249,28 @@ impl Player {
     }
 
     pub fn playlist_panel(&mut self, ctx: &egui::Context) {
+        // 全屏时不绘制侧栏，保留窗口模式下的列表显示偏好。
+        if ctx.input(|input| input.viewport().fullscreen.unwrap_or(false)) {
+            return;
+        }
         if !self.show_playlist {
+            egui::SidePanel::right("playlist_collapsed")
+                .exact_width(32.0)
+                .resizable(false)
+                .frame(
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(19, 24, 31))
+                        .inner_margin(4.0),
+                )
+                .show(ctx, |ui| {
+                    if ui
+                        .add_sized([24.0, 32.0], egui::Button::new("‹").small())
+                        .on_hover_text("展开播放列表")
+                        .clicked()
+                    {
+                        self.show_playlist = true;
+                    }
+                });
             return;
         }
         egui::SidePanel::right("playlist")
@@ -255,6 +291,9 @@ impl Player {
                             .color(MUTED),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("›").on_hover_text("收起播放列表").clicked() {
+                            self.show_playlist = false;
+                        }
                         if ui
                             .add_enabled(
                                 !self.playlist.is_empty(),
