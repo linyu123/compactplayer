@@ -26,6 +26,18 @@ fn main() -> Result<(), String> {
     if !rendered {
         return Err("No colored video frame within 10 seconds".into());
     }
+    for (width, height) in [(180, 320), (320, 180), (180, 320), (320, 180)] {
+        for _ in 0..10 {
+            backend.render(width, height, &mut pixels, true)?;
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[0] > 20 || pixel[1] > 20 || pixel[2] > 20)
+        {
+            return Err("No colored frame after rotation viewport change".into());
+        }
+    }
     backend.command(&["set", "pause", "yes"])?;
     if backend.property("pause").as_deref() != Some("yes") {
         return Err("Pause failed".into());
@@ -50,6 +62,6 @@ fn main() -> Result<(), String> {
         return Err("Seek failed".into());
     }
     backend.command(&["stop"])?;
-    println!("PASS: colored frame rendered; pause, resume, seek and stop succeeded");
+    println!("PASS: colored frames rendered in landscape and portrait; pause, resume, seek and stop succeeded");
     Ok(())
 }

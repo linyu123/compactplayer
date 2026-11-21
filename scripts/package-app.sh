@@ -12,6 +12,7 @@ bundle="dist/$architecture/轻巧播放器.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Frameworks" "$bundle/Contents/Resources"
 cp "target/$target/release/compact-player" "$bundle/Contents/MacOS/compact-player"
 cp resources/Info.plist "$bundle/Contents/Info.plist"
+cp resources/AppIcon.icns "$bundle/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $minimum" "$bundle/Contents/Info.plist"
 cp runtime/libmpv-libs_v0.7.3_macos-"$runtime_arch"-video-default/*.dylib "$bundle/Contents/Frameworks/"
 for library in "$bundle/Contents/Frameworks/"*.dylib; do
