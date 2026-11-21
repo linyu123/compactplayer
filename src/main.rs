@@ -1,10 +1,17 @@
+mod media;
 mod mpv;
 
 use eframe::egui;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+struct Intake {
+    paths: Vec<PathBuf>,
+}
+
 struct Player {
+    runtime: PathBuf,
     backend: Option<mpv::Mpv>,
     playlist: Vec<PathBuf>,
     selected: Option<usize>,
@@ -15,6 +22,12 @@ struct Player {
     volume: f32,
     show_playlist: bool,
     playing: bool,
+    rotation: u16,
+    intake: Option<Receiver<Result<Intake, String>>>,
+    notice: Option<String>,
+    speed: f64,
+    rewinding: bool,
+    last_rewind: std::time::Instant,
 }
 
 impl Player {
@@ -34,6 +47,7 @@ impl Player {
             Err(error) => format!("播放内核加载失败：{error}"),
         };
         Self {
+            runtime: path,
             backend: result.ok(),
             playlist: Vec::new(),
             selected: None,
@@ -44,6 +58,12 @@ impl Player {
             volume: 75.0,
             show_playlist: true,
             playing: false,
+            rotation: 0,
+            intake: None,
+            notice: None,
+            speed: 1.0,
+            rewinding: false,
+            last_rewind: std::time::Instant::now(),
         }
     }
 
@@ -75,7 +95,11 @@ impl Player {
             return;
         };
         if self.command(&["loadfile", &path.to_string_lossy(), "replace"]) {
+            self.rotation = 0;
             self.command(&["set", "pause", "no"]);
+            self.command(&["set", "speed", "1"]);
+            self.speed = 1.0;
+            self.rewinding = false;
             self.selected = Some(index);
             self.playing = true;
             self.texture = None;
@@ -88,10 +112,92 @@ impl Player {
     }
 
     fn add(&mut self, paths: Vec<PathBuf>) {
-        let first = self.playlist.len();
-        self.playlist.extend(paths);
-        if first < self.playlist.len() {
-            self.play(first);
+        if paths.is_empty() {
+            return;
+        }
+        let mut accepted = Vec::new();
+        let mut rejected = Vec::new();
+        for path in paths {
+            if media::is_media(&path) {
+                let path = path.canonicalize().unwrap_or(path);
+                if !self.playlist.contains(&path) {
+                    self.playlist.push(path.clone());
+                }
+                accepted.push(path);
+            } else {
+                rejected.push(path.display().to_string());
+            }
+        }
+        if let Some(path) = accepted.first() {
+            if let Some(index) = self.playlist.iter().position(|item| item == path) {
+                self.play(index);
+            }
+        }
+        if !rejected.is_empty() {
+            self.notice = Some(format!(
+                "不支持的文件类型，不能播放：\n{}",
+                rejected.join("\n")
+            ));
+        }
+        if accepted.is_empty() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        self.intake = Some(receiver);
+        std::thread::spawn(move || {
+            let paths = media::candidates(accepted)
+                .into_iter()
+                .filter_map(|(path, explicit)| if explicit { None } else { Some(path) })
+                .collect();
+            let _ = sender.send(Ok(Intake { paths }));
+        });
+    }
+
+    fn toggle_play(&mut self) {
+        if !self.playing || self.property("eof-reached").as_deref() == Some("yes") {
+            if let Some(index) = self.selected {
+                self.play(index);
+            }
+        } else if self.rewinding || self.speed != 1.0 {
+            self.rewinding = false;
+            self.speed = 1.0;
+            self.command(&["set", "speed", "1"]);
+            self.command(&["set", "pause", "no"]);
+        } else {
+            self.command(&["cycle", "pause"]);
+        }
+    }
+
+    fn seek(&mut self, offset: f64) {
+        if !self.playing {
+            return;
+        }
+        let position =
+            (self.number("time-pos") + offset).clamp(0.0, self.number("duration").max(0.0));
+        self.command(&["seek", &position.to_string(), "absolute+exact"]);
+    }
+
+    fn shuttle(&mut self, reverse: bool) {
+        if !self.playing {
+            return;
+        }
+        let same_direction = self.rewinding == reverse;
+        let speeds = [2.0, 5.0, 10.0, 30.0, 60.0];
+        self.speed = if same_direction {
+            speeds
+                .into_iter()
+                .find(|speed| *speed > self.speed)
+                .unwrap_or(2.0)
+        } else {
+            2.0
+        };
+        self.rewinding = reverse;
+        self.last_rewind = std::time::Instant::now();
+        if reverse {
+            self.command(&["set", "pause", "yes"]);
+        } else {
+            self.command(&["set", "speed", &self.speed.to_string()]);
+            self.command(&["set", "pause", "no"]);
         }
     }
 
@@ -130,6 +236,50 @@ impl Player {
 impl eframe::App for Player {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(16));
+        if let Some(result) = self
+            .intake
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        {
+            self.intake = None;
+            match result {
+                Ok(result) => {
+                    for path in result.paths {
+                        if !self.playlist.contains(&path) {
+                            self.playlist.push(path);
+                        }
+                    }
+                }
+                Err(error) => self.notice = Some(format!("文件检测失败：{error}")),
+            }
+        }
+        if self.rewinding
+            && self.playing
+            && self.last_rewind.elapsed() >= Duration::from_millis(100)
+        {
+            let elapsed = self.last_rewind.elapsed().as_secs_f64();
+            self.last_rewind = std::time::Instant::now();
+            self.seek(-elapsed * self.speed);
+            if self.number("time-pos") <= 0.0 {
+                self.rewinding = false;
+                self.speed = 1.0;
+            }
+        }
+        if self.notice.is_some() {
+            egui::Window::new("播放提示")
+                .collapsible(false)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(250.0)
+                        .show(ui, |ui| {
+                            ui.label(self.notice.as_deref().unwrap_or_default());
+                        });
+                    if ui.button("知道了").clicked() {
+                        self.notice = None;
+                    }
+                });
+        }
         let paths = ctx.input(|input| {
             input
                 .raw
@@ -142,11 +292,11 @@ impl eframe::App for Player {
             self.add(paths);
         }
         if ctx.input(|input| input.key_pressed(egui::Key::Space)) {
-            self.command(&["cycle", "pause"]);
+            self.toggle_play();
         }
         for (key, offset) in [(egui::Key::ArrowLeft, "-5"), (egui::Key::ArrowRight, "5")] {
             if ctx.input(|input| input.key_pressed(key)) {
-                self.command(&["seek", offset, "relative"]);
+                self.seek(offset.parse().unwrap_or(0.0));
             }
         }
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -167,6 +317,7 @@ impl eframe::App for Player {
                     {
                         match mpv::Mpv::new(&path) {
                             Ok(backend) => {
+                                self.runtime = path;
                                 self.backend = Some(backend);
                                 self.playing = false;
                                 self.texture = None;
@@ -194,6 +345,13 @@ impl eframe::App for Player {
                         ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
                 }
+                if ui
+                    .add_enabled(self.playing, egui::Button::new("旋转 90°"))
+                    .on_hover_text("每次顺时针旋转 90°，连续点击两次可纠正倒拍视频")
+                    .clicked()
+                {
+                    self.rotation = (self.rotation + 90) % 360;
+                }
             });
         });
         egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
@@ -206,32 +364,32 @@ impl eframe::App for Player {
             {
                 self.command(&["seek", &position.to_string(), "absolute"]);
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("上一项").clicked() {
                     if let Some(index) = self.selected {
                         self.play(index.saturating_sub(1));
                     }
                 }
                 let paused = self.property("pause").as_deref() == Some("yes");
+                let ended = self.property("eof-reached").as_deref() == Some("yes");
                 if ui
-                    .button(if paused || !self.playing {
+                    .button(if ended {
+                        "重播"
+                    } else if self.rewinding || self.speed != 1.0 {
+                        "正常播放"
+                    } else if paused || !self.playing {
                         "播放"
                     } else {
                         "暂停"
                     })
                     .clicked()
                 {
-                    if !self.playing {
-                        if let Some(index) = self.selected {
-                            self.play(index);
-                        }
-                    } else {
-                        self.command(&["cycle", "pause"]);
-                    }
+                    self.toggle_play();
                 }
                 if ui.button("停止").clicked() {
                     self.command(&["stop"]);
                     self.playing = false;
+                    self.rewinding = false;
                     self.texture = None;
                     self.status = "已停止".into();
                 }
@@ -252,6 +410,37 @@ impl eframe::App for Player {
                     .changed()
                 {
                     self.command(&["set", "volume", &self.volume.to_string()]);
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("后退 10 秒").clicked() {
+                    self.seek(-10.0);
+                }
+                if ui
+                    .button("快退")
+                    .on_hover_text("连续点击切换 2、5、10、30、60 倍；点击播放恢复正常速度")
+                    .clicked()
+                {
+                    self.shuttle(true);
+                }
+                if ui
+                    .button("快进")
+                    .on_hover_text("连续点击切换 2、5、10、30、60 倍；点击播放恢复正常速度")
+                    .clicked()
+                {
+                    self.shuttle(false);
+                }
+                if ui.button("前进 10 秒").clicked() {
+                    self.seek(10.0);
+                }
+                ui.label(format!(
+                    "{}{} 倍速",
+                    if self.rewinding { "倒退 " } else { "" },
+                    self.speed
+                ));
+                if self.intake.is_some() {
+                    ui.spinner();
+                    ui.label("正在扫描同目录视频");
                 }
             });
             ui.label(egui::RichText::new(&self.status).small());
@@ -285,8 +474,10 @@ impl eframe::App for Player {
                         {
                             if self.backend.is_none() || self.command(&["stop"]) {
                                 self.playlist.clear();
+                                self.intake = None;
                                 self.selected = None;
                                 self.playing = false;
+                                self.rewinding = false;
                                 self.texture = None;
                                 self.status = "播放列表已清空".into();
                             }
@@ -318,6 +509,7 @@ impl eframe::App for Player {
                             if is_current {
                                 self.selected = None;
                                 self.playing = false;
+                                self.rewinding = false;
                                 self.texture = None;
                                 self.status = "当前播放项已从列表删除".into();
                             } else if let Some(current) = self.selected {
@@ -335,9 +527,17 @@ impl eframe::App for Player {
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
                 let available = ui.available_size();
+                let render_size = if self.rotation % 180 == 90 {
+                    egui::vec2(available.y, available.x)
+                } else {
+                    available
+                };
+                let scale = (1920.0 / render_size.x.max(1.0))
+                    .min(1080.0 / render_size.y.max(1.0))
+                    .min(1.0);
                 let size = [
-                    available.x.clamp(1.0, 1920.0) as usize,
-                    available.y.clamp(1.0, 1080.0) as usize,
+                    (render_size.x * scale).max(1.0) as usize,
+                    (render_size.y * scale).max(1.0) as usize,
                 ];
                 let resized = self.size != size;
                 self.size = size;
@@ -369,7 +569,12 @@ impl eframe::App for Player {
                     }
                 }
                 if let Some(texture) = &self.texture {
-                    ui.add(egui::Image::new(texture).fit_to_exact_size(available));
+                    let (rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+                    let image_rect = egui::Rect::from_center_size(rect.center(), render_size);
+                    egui::Image::new(texture)
+                        .fit_to_exact_size(render_size)
+                        .rotate((self.rotation as f32).to_radians(), egui::vec2(0.5, 0.5))
+                        .paint_at(ui, image_rect);
                 } else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(available.y * 0.38);
@@ -396,6 +601,75 @@ fn timestamp(seconds: f64) -> String {
         seconds / 60 % 60,
         seconds % 60
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires local libmpv and COMPACT_TEST_VIDEO fixture"]
+    fn detects_invalid_media_and_replays_after_eof() {
+        let video =
+            PathBuf::from(std::env::var_os("COMPACT_TEST_VIDEO").expect("test video required"));
+        let mut player = Player::new();
+        let probe = mpv::Mpv::probe(&player.runtime).unwrap();
+        assert!(probe.accepts_media(&video));
+        let invalid =
+            std::env::temp_dir().join(format!("compact-invalid-{}.mp4", std::process::id()));
+        std::fs::write(&invalid, b"This is text, not a video").unwrap();
+        assert!(!probe.accepts_media(&invalid));
+        std::fs::remove_file(invalid).unwrap();
+        player.playlist.push(video);
+        player.play(0);
+        player.command(&["set", "mute", "yes"]);
+        let mut pixels = vec![0; 320 * 180 * 4];
+        let start = std::time::Instant::now();
+        while player.property("eof-reached").as_deref() != Some("yes") {
+            player
+                .backend
+                .as_ref()
+                .unwrap()
+                .render(320, 180, &mut pixels, false)
+                .unwrap();
+            assert!(start.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        player.toggle_play();
+        let start = std::time::Instant::now();
+        loop {
+            player
+                .backend
+                .as_ref()
+                .unwrap()
+                .render(320, 180, &mut pixels, false)
+                .unwrap();
+            if player.number("time-pos") > 0.1
+                && player.number("time-pos") < 1.0
+                && player.property("eof-reached").as_deref() == Some("no")
+            {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        player.shuttle(false);
+        assert_eq!(
+            player.property("speed").unwrap().parse::<f64>().unwrap(),
+            2.0
+        );
+        player.shuttle(false);
+        assert_eq!(
+            player.property("speed").unwrap().parse::<f64>().unwrap(),
+            5.0
+        );
+        player.toggle_play();
+        assert_eq!(
+            player.property("speed").unwrap().parse::<f64>().unwrap(),
+            1.0
+        );
+        player.command(&["stop"]);
+    }
 }
 
 fn main() -> eframe::Result {
