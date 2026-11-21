@@ -26,7 +26,44 @@ pub struct Mpv {
 }
 
 impl Mpv {
+    pub fn accepts_media(&self, path: &Path) -> bool {
+        if self
+            .command(&["loadfile", &path.to_string_lossy()])
+            .is_err()
+        {
+            return false;
+        }
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(3) {
+            if let Some(tracks) = self
+                .property("track-list")
+                .and_then(|value| serde_json::from_str::<Vec<serde_json::Value>>(&value).ok())
+            {
+                if tracks.iter().any(|track| {
+                    track["type"] == "audio"
+                        || (track["type"] == "video"
+                            && track["image"] != true
+                            && track["albumart"] != true)
+                }) {
+                    self.command(&["stop"]).ok();
+                    return true;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        self.command(&["stop"]).ok();
+        false
+    }
+
+    pub fn probe(path: &Path) -> Result<Self, String> {
+        Self::create(path, true)
+    }
+
     pub fn new(path: &Path) -> Result<Self, String> {
+        Self::create(path, false)
+    }
+
+    fn create(path: &Path, probe: bool) -> Result<Self, String> {
         unsafe {
             let library = Library::new(path).map_err(|error| error.to_string())?;
             let create = *library
@@ -73,7 +110,7 @@ impl Mpv {
             }
             for (name, value) in [
                 ("config", "no"),
-                ("vo", "libmpv"),
+                ("vo", if probe { "null" } else { "libmpv" }),
                 ("hwdec", "no"),
                 ("keep-open", "yes"),
                 ("volume", "75"),
@@ -84,7 +121,19 @@ impl Mpv {
                     CString::new(value).unwrap().as_ptr(),
                 ))?;
             }
+            if probe {
+                for (name, value) in [("ao", "null"), ("pause", "yes"), ("audio-display", "no")] {
+                    check(option(
+                        player.handle,
+                        CString::new(name).unwrap().as_ptr(),
+                        CString::new(value).unwrap().as_ptr(),
+                    ))?;
+                }
+            }
             check(initialize(player.handle))?;
+            if probe {
+                return Ok(player);
+            }
             let mut parameters = [
                 Parameter {
                     kind: 1,
