@@ -1,5 +1,6 @@
 mod media;
 mod mpv;
+mod ui;
 
 use eframe::egui;
 use std::path::PathBuf;
@@ -16,6 +17,7 @@ struct Player {
     playlist: Vec<PathBuf>,
     selected: Option<usize>,
     texture: Option<egui::TextureHandle>,
+    brand: Option<egui::TextureHandle>,
     pixels: Vec<u8>,
     size: [usize; 2],
     status: String,
@@ -52,6 +54,7 @@ impl Player {
             playlist: Vec::new(),
             selected: None,
             texture: None,
+            brand: None,
             pixels: Vec::new(),
             size: [0, 0],
             status,
@@ -158,13 +161,12 @@ impl Player {
             if let Some(index) = self.selected {
                 self.play(index);
             }
-        } else if self.rewinding || self.speed != 1.0 {
+        } else {
+            let active = self.rewinding || self.property("pause").as_deref() != Some("yes");
             self.rewinding = false;
             self.speed = 1.0;
             self.command(&["set", "speed", "1"]);
-            self.command(&["set", "pause", "no"]);
-        } else {
-            self.command(&["cycle", "pause"]);
+            self.command(&["set", "pause", if active { "yes" } else { "no" }]);
         }
     }
 
@@ -236,6 +238,18 @@ impl Player {
 impl eframe::App for Player {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(16));
+        if self.brand.is_none() {
+            if let Ok(image) = image::load_from_memory(include_bytes!("../resources/AppIcon.png")) {
+                let image = image
+                    .resize(192, 192, image::imageops::FilterType::Lanczos3)
+                    .to_rgba8();
+                self.brand = Some(ctx.load_texture(
+                    "brand",
+                    egui::ColorImage::from_rgba_unmultiplied([192, 192], image.as_raw()),
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+        }
         if let Some(result) = self
             .intake
             .as_ref()
@@ -299,230 +313,9 @@ impl eframe::App for Player {
                 self.seek(offset.parse().unwrap_or(0.0));
             }
         }
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("轻巧播放器")
-                        .strong()
-                        .color(egui::Color32::LIGHT_BLUE),
-                );
-                if ui.button("打开").clicked() {
-                    self.open();
-                }
-                if ui.button("播放内核").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("选择 libmpv 播放内核")
-                        .add_filter("播放内核动态库", &["dylib"])
-                        .pick_file()
-                    {
-                        match mpv::Mpv::new(&path) {
-                            Ok(backend) => {
-                                self.runtime = path;
-                                self.backend = Some(backend);
-                                self.playing = false;
-                                self.texture = None;
-                                self.status = "播放内核已就绪".into();
-                            }
-                            Err(error) => self.status = error,
-                        }
-                    }
-                }
-                ui.toggle_value(&mut self.show_playlist, "播放列表");
-                if ui.button("字幕").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("加载字幕文件")
-                        .add_filter("字幕文件", &["srt", "ass", "ssa", "vtt"])
-                        .pick_file()
-                    {
-                        self.command(&["sub-add", &path.to_string_lossy(), "select"]);
-                    }
-                }
-                if ui.button("切换音轨").clicked() {
-                    self.switch_audio();
-                }
-                if ui.button("全屏").clicked() {
-                    let fullscreen =
-                        ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
-                }
-                if ui
-                    .add_enabled(self.playing, egui::Button::new("旋转 90°"))
-                    .on_hover_text("每次顺时针旋转 90°，连续点击两次可纠正倒拍视频")
-                    .clicked()
-                {
-                    self.rotation = (self.rotation + 90) % 360;
-                }
-            });
-        });
-        egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
-            let mut position = self.number("time-pos");
-            let duration = self.number("duration");
-            ui.spacing_mut().slider_width = ui.available_width();
-            if ui
-                .add(egui::Slider::new(&mut position, 0.0..=duration.max(1.0)).show_value(false))
-                .changed()
-            {
-                self.command(&["seek", &position.to_string(), "absolute"]);
-            }
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("上一项").clicked() {
-                    if let Some(index) = self.selected {
-                        self.play(index.saturating_sub(1));
-                    }
-                }
-                let paused = self.property("pause").as_deref() == Some("yes");
-                let ended = self.property("eof-reached").as_deref() == Some("yes");
-                if ui
-                    .button(if ended {
-                        "重播"
-                    } else if self.rewinding || self.speed != 1.0 {
-                        "正常播放"
-                    } else if paused || !self.playing {
-                        "播放"
-                    } else {
-                        "暂停"
-                    })
-                    .clicked()
-                {
-                    self.toggle_play();
-                }
-                if ui.button("停止").clicked() {
-                    self.command(&["stop"]);
-                    self.playing = false;
-                    self.rewinding = false;
-                    self.texture = None;
-                    self.status = "已停止".into();
-                }
-                if ui.button("下一项").clicked() {
-                    if let Some(index) = self.selected {
-                        self.play(index + 1);
-                    }
-                }
-                ui.monospace(format!("{} / {}", timestamp(position), timestamp(duration)));
-                ui.spacing_mut().slider_width = 100.0;
-                let muted = self.property("mute").as_deref() == Some("yes");
-                if ui.button(if muted { "取消静音" } else { "静音" }).clicked() {
-                    self.command(&["cycle", "mute"]);
-                }
-                ui.label("音量");
-                if ui
-                    .add(egui::Slider::new(&mut self.volume, 0.0..=100.0).suffix("%"))
-                    .changed()
-                {
-                    self.command(&["set", "volume", &self.volume.to_string()]);
-                }
-            });
-            ui.horizontal(|ui| {
-                if ui.button("后退 10 秒").clicked() {
-                    self.seek(-10.0);
-                }
-                if ui
-                    .button("快退")
-                    .on_hover_text("连续点击切换 2、5、10、30、60 倍；点击播放恢复正常速度")
-                    .clicked()
-                {
-                    self.shuttle(true);
-                }
-                if ui
-                    .button("快进")
-                    .on_hover_text("连续点击切换 2、5、10、30、60 倍；点击播放恢复正常速度")
-                    .clicked()
-                {
-                    self.shuttle(false);
-                }
-                if ui.button("前进 10 秒").clicked() {
-                    self.seek(10.0);
-                }
-                ui.label(format!(
-                    "{}{} 倍速",
-                    if self.rewinding { "倒退 " } else { "" },
-                    self.speed
-                ));
-                if self.intake.is_some() {
-                    ui.spinner();
-                    ui.label("正在扫描同目录视频");
-                }
-            });
-            ui.label(egui::RichText::new(&self.status).small());
-            if self.playing && duration > 0.0 {
-                let audio_status = if self.audio_tracks().is_empty() {
-                    "当前文件没有音轨".to_string()
-                } else if self.property("aid").as_deref() == Some("no") {
-                    "音轨已关闭，请点击“切换音轨”恢复".to_string()
-                } else if self.property("mute").as_deref() == Some("yes") {
-                    "已静音".to_string()
-                } else if self.volume == 0.0 {
-                    "音量为零".to_string()
-                } else {
-                    match self.property("current-ao") {
-                        Some(output) if output != "null" => format!("音频输出正常（{output}）"),
-                        _ => "音频输出未就绪，请检查系统输出设备".to_string(),
-                    }
-                };
-                ui.label(egui::RichText::new(audio_status).small());
-            }
-        });
-        if self.show_playlist {
-            egui::SidePanel::right("playlist")
-                .default_width(200.0)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("播放列表 / {} 项", self.playlist.len()));
-                        if ui
-                            .add_enabled(!self.playlist.is_empty(), egui::Button::new("清空"))
-                            .clicked()
-                        {
-                            if self.backend.is_none() || self.command(&["stop"]) {
-                                self.playlist.clear();
-                                self.intake = None;
-                                self.selected = None;
-                                self.playing = false;
-                                self.rewinding = false;
-                                self.texture = None;
-                                self.status = "播放列表已清空".into();
-                            }
-                        }
-                    });
-                    let mut selected = None;
-                    let mut removed = None;
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (index, path) in self.playlist.iter().enumerate() {
-                            let response = ui.selectable_label(
-                                self.selected == Some(index),
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                            );
-                            if response.clicked() {
-                                selected = Some(index);
-                            }
-                            response.context_menu(|ui| {
-                                if ui.button("删除").clicked() {
-                                    removed = Some(index);
-                                    ui.close_menu();
-                                }
-                            });
-                        }
-                    });
-                    if let Some(index) = removed {
-                        let is_current = self.selected == Some(index);
-                        if !is_current || self.backend.is_none() || self.command(&["stop"]) {
-                            self.playlist.remove(index);
-                            if is_current {
-                                self.selected = None;
-                                self.playing = false;
-                                self.rewinding = false;
-                                self.texture = None;
-                                self.status = "当前播放项已从列表删除".into();
-                            } else if let Some(current) = self.selected {
-                                if index < current {
-                                    self.selected = Some(current - 1);
-                                }
-                            }
-                        }
-                    } else if let Some(index) = selected {
-                        self.play(index);
-                    }
-                });
-        }
+        self.toolbar(ctx);
+        self.controls(ctx);
+        self.playlist_panel(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
@@ -577,14 +370,30 @@ impl eframe::App for Player {
                         .paint_at(ui, image_rect);
                 } else {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(available.y * 0.38);
+                        ui.add_space((available.y - 230.0).max(0.0) * 0.5);
+                        if let Some(brand) = &self.brand {
+                            ui.add(
+                                egui::Image::new(brand).fit_to_exact_size(egui::vec2(96.0, 96.0)),
+                            );
+                        }
                         ui.label(
                             egui::RichText::new("轻巧播放器")
-                                .size(32.0)
-                                .color(egui::Color32::LIGHT_BLUE),
+                                .size(24.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(225, 233, 242)),
                         );
-                        ui.label("将视频文件拖到这里");
-                        if ui.button("打开媒体文件").clicked() {
+                        ui.label(
+                            egui::RichText::new("将视频拖入窗口，或选择一个文件开始播放")
+                                .size(13.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                        ui.add_space(12.0);
+                        if ui
+                            .add(
+                                egui::Button::new("打开媒体文件").min_size(egui::vec2(150.0, 38.0)),
+                            )
+                            .clicked()
+                        {
                             self.open();
                         }
                     });
@@ -669,6 +478,12 @@ mod tests {
             1.0
         );
         player.command(&["stop"]);
+        player.play(0);
+        player.toggle_play();
+        assert_eq!(player.property("pause").as_deref(), Some("yes"));
+        player.toggle_play();
+        assert_eq!(player.property("pause").as_deref(), Some("no"));
+        player.command(&["stop"]);
     }
 }
 
@@ -677,12 +492,12 @@ fn main() -> eframe::Result {
         "轻巧播放器",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([960.0, 590.0])
-                .with_min_inner_size([760.0, 420.0]),
+                .with_inner_size([1120.0, 700.0])
+                .with_min_inner_size([960.0, 540.0]),
             ..Default::default()
         },
         Box::new(|creation| {
-            creation.egui_ctx.set_theme(egui::ThemePreference::Dark);
+            ui::configure(&creation.egui_ctx);
             let mut fonts = egui::FontDefinitions::default();
             if let Ok(data) = std::fs::read("/System/Library/Fonts/PingFang.ttc") {
                 fonts
