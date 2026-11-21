@@ -39,10 +39,17 @@ macOS 桌面启动可用 `bash scripts/run-app.sh /absolute/path/video.mkv`，�
 
 本项目为独立实现，不包含 PotPlayer 的代码、图标或品牌素材。
 
+## 应用图标
+
+图标采用深蓝圆角底、青蓝渐变播放键及进度弧线，源设计为 `scripts/generate-icon.swift`。
+运行 `bash scripts/generate-icon.sh` 生成 `resources/AppIcon.png` 和完整尺寸的 `resources/AppIcon.icns`。
+开发 app 的启动脚本会复制图标并通过 Info.plist 配置，重新打包时也需要复制到 Contents/Resources/。
+
 ## 基础能力迭代
 
-当前开发分支为 `codex/playback-improvements`，基础播放改进与旋转功能尚未合并到 main。
+基础播放改进、旋转功能和应用图标已纳入主干。
 工具栏“旋转 90°”每次顺时针旋转，按 0° → 90° → 180° → 270° → 0° 循环。
+旋转由界面纹理层完成，横竖方向切换时调整渲染尺寸，绕过当前 libmpv 软件旋转的裁剪断言崩溃。
 只改变播放显示，不修改原视频文件；打开或重播视频时恢复默认方向，保留文件自身方向元数据。
 
 - 播放结束后，点击播放或按空格会从头重新播放。

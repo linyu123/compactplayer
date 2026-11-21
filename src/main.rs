@@ -95,7 +95,6 @@ impl Player {
             return;
         };
         if self.command(&["loadfile", &path.to_string_lossy(), "replace"]) {
-            self.command(&["set", "video-rotate", "0"]);
             self.rotation = 0;
             self.command(&["set", "pause", "no"]);
             self.command(&["set", "speed", "1"]);
@@ -351,10 +350,7 @@ impl eframe::App for Player {
                     .on_hover_text("每次顺时针旋转 90°，连续点击两次可纠正倒拍视频")
                     .clicked()
                 {
-                    let rotation = (self.rotation + 90) % 360;
-                    if self.command(&["set", "video-rotate", &rotation.to_string()]) {
-                        self.rotation = rotation;
-                    }
+                    self.rotation = (self.rotation + 90) % 360;
                 }
             });
         });
@@ -531,9 +527,17 @@ impl eframe::App for Player {
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
                 let available = ui.available_size();
+                let render_size = if self.rotation % 180 == 90 {
+                    egui::vec2(available.y, available.x)
+                } else {
+                    available
+                };
+                let scale = (1920.0 / render_size.x.max(1.0))
+                    .min(1080.0 / render_size.y.max(1.0))
+                    .min(1.0);
                 let size = [
-                    available.x.clamp(1.0, 1920.0) as usize,
-                    available.y.clamp(1.0, 1080.0) as usize,
+                    (render_size.x * scale).max(1.0) as usize,
+                    (render_size.y * scale).max(1.0) as usize,
                 ];
                 let resized = self.size != size;
                 self.size = size;
@@ -565,7 +569,12 @@ impl eframe::App for Player {
                     }
                 }
                 if let Some(texture) = &self.texture {
-                    ui.add(egui::Image::new(texture).fit_to_exact_size(available));
+                    let (rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+                    let image_rect = egui::Rect::from_center_size(rect.center(), render_size);
+                    egui::Image::new(texture)
+                        .fit_to_exact_size(render_size)
+                        .rotate((self.rotation as f32).to_radians(), egui::vec2(0.5, 0.5))
+                        .paint_at(ui, image_rect);
                 } else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(available.y * 0.38);
@@ -614,17 +623,6 @@ mod tests {
         player.playlist.push(video);
         player.play(0);
         player.command(&["set", "mute", "yes"]);
-        for rotation in [90, 180, 270, 0] {
-            assert!(player.command(&["set", "video-rotate", &rotation.to_string()]));
-            assert_eq!(
-                player
-                    .property("video-rotate")
-                    .unwrap()
-                    .parse::<u16>()
-                    .unwrap(),
-                rotation
-            );
-        }
         let mut pixels = vec![0; 320 * 180 * 4];
         let start = std::time::Instant::now();
         while player.property("eof-reached").as_deref() != Some("yes") {
