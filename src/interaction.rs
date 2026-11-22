@@ -72,6 +72,15 @@ impl Player {
         if pressed(Modifiers::NONE, Key::Space) {
             self.toggle_play();
         }
+        for (key, command) in [(Key::Comma, "frame-back-step"), (Key::Period, "frame-step")] {
+            if pressed(Modifiers::NONE, key) && self.playing {
+                self.rewinding = false;
+                self.speed = 1.0;
+                self.command(&["set", "speed", "1"]);
+                self.command(&["set", "pause", "yes"]);
+                self.command(&[command]);
+            }
+        }
         if pressed(Modifiers::NONE, Key::R) && self.playing {
             self.rotation = (self.rotation + 90) % 360;
         }
