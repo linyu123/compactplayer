@@ -33,7 +33,7 @@ macOS 桌面启动可用 `bash scripts/run-app.sh /absolute/path/video.mkv`，�
 - 关闭窗口时释放渲染上下文及 libmpv 实例。
 
 当前采用软件解码和软件渲染，渲染缓冲上限为 1920×1080，会有 CPU 拷贝开销。
-尚未实现 GPU 渲染、硬件解码、自动连播、断点续播或独立应用打包。
+尚未实现 GPU 渲染和硬件解码。
 渲染及控制检查：`cargo run --bin check_render -- /path/libmpv.dylib /path/test-video.mp4`。
 此检查需要含彩色画面且时长超过一秒的测试视频。
 
@@ -51,8 +51,17 @@ macOS 桌面启动可用 `bash scripts/run-app.sh /absolute/path/video.mkv`，�
 
 ## 应用打包
 
-主干独立应用打包：`bash scripts/package-app.sh`，输出 `dist/CompactPlayer-0.1.2-main-arm64.dmg`。
+独立应用打包：`bash scripts/package-app.sh`，输出 `dist/CompactPlayer-0.1.3-main-arm64.dmg`。
 此包适用于 Apple Silicon、macOS 14+，包含播放运行库和图标，使用本地临时签名，尚未公证。
+
+## 0.1.3 播放连续性（开发分支）
+
+- 顶部播放模式按钮依次切换顺序播放、单曲循环、列表循环；默认顺序播放，到列表末尾停止。
+- 播完自动切换或循环时从头播放；手动打开/切换文件时恢复上次进度。距离结尾不足两秒或进度不足三秒不保存断点。
+- 重启恢复列表、选中项、音量、窗口尺寸、列表显示状态和播放模式；不自动开始播放，点击播放后续播。
+- 每五秒后台保存一次，正常退出时再保存最终状态；异常退出可能丢失最近五秒进度。
+- 会话文件：`~/Library/Application Support/CompactPlayer/session.json`。使用临时文件后原子替换，损坏配置回退到默认值。
+- 列表中的文件不做同步探测；文件被移动或删除后，实际打开时由播放内核报告错误。
 
 ## 应用图标
 

@@ -1,5 +1,6 @@
 mod media;
 mod mpv;
+mod session;
 mod ui;
 
 use eframe::egui;
@@ -30,6 +31,9 @@ struct Player {
     speed: f64,
     rewinding: bool,
     last_rewind: std::time::Instant,
+    session: session::Session,
+    eof_armed: bool,
+    last_save: std::time::Instant,
 }
 
 impl Player {
@@ -77,6 +81,9 @@ impl Player {
             speed: 1.0,
             rewinding: false,
             last_rewind: std::time::Instant::now(),
+            session: session::Session::default(),
+            eof_armed: false,
+            last_save: std::time::Instant::now(),
         }
     }
 
@@ -104,10 +111,33 @@ impl Player {
     }
 
     fn play(&mut self, index: usize) {
+        self.play_from(index, true);
+    }
+
+    fn play_from(&mut self, index: usize, resume: bool) {
         let Some(path) = self.playlist.get(index).cloned() else {
             return;
         };
-        if self.command(&["loadfile", &path.to_string_lossy(), "replace"]) {
+        self.remember_position();
+        let position = if resume {
+            self.session.position(&path)
+        } else {
+            0.0
+        };
+        if !resume {
+            self.session
+                .positions
+                .remove(&path.to_string_lossy().into_owned());
+        }
+        // libmpv 0.36 loadfile 的第四个参数是当前文件的选项。
+        if self.command(&[
+            "loadfile",
+            &path.to_string_lossy(),
+            "replace",
+            &format!("start={position}"),
+        ]) {
+            self.eof_armed = false;
+            self.command(&["set", "volume", &self.volume.to_string()]);
             self.rotation = 0;
             self.command(&["set", "pause", "no"]);
             self.command(&["set", "speed", "1"]);
@@ -122,6 +152,56 @@ impl Player {
                 .to_string_lossy()
                 .into_owned();
         }
+    }
+
+    fn remember_position(&mut self) {
+        if !self.playing {
+            return;
+        }
+        let Some(path) = self
+            .selected
+            .and_then(|index| self.playlist.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        if self.property("eof-reached").as_deref() == Some("yes") {
+            self.session
+                .positions
+                .remove(&path.to_string_lossy().into_owned());
+        } else if self.eof_armed {
+            self.session
+                .remember(&path, self.number("time-pos"), self.number("duration"));
+        }
+    }
+
+    fn continuity(&mut self) {
+        if !self.playing {
+            return;
+        }
+        match self.property("eof-reached").as_deref() {
+            Some("no") => self.eof_armed = true,
+            Some("yes") if self.eof_armed => {
+                self.eof_armed = false;
+                self.remember_position();
+                if let Some(index) = self.selected {
+                    if let Some(next) = self.session.mode.next(index, self.playlist.len()) {
+                        self.play_from(next, false);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn save_session(&mut self) {
+        self.remember_position();
+        self.session.save(
+            &self.playlist,
+            self.selected,
+            self.volume,
+            self.show_playlist,
+        );
     }
 
     fn add(&mut self, paths: Vec<PathBuf>) {
@@ -169,7 +249,7 @@ impl Player {
     fn toggle_play(&mut self) {
         if !self.playing || self.property("eof-reached").as_deref() == Some("yes") {
             if let Some(index) = self.selected {
-                self.play(index);
+                self.play_from(index, !self.playing);
             }
         } else {
             let active = self.rewinding || self.property("pause").as_deref() != Some("yes");
@@ -323,6 +403,16 @@ impl eframe::App for Player {
                 self.seek(offset.parse().unwrap_or(0.0));
             }
         }
+        self.continuity();
+        if let Some(size) = ctx.input(|input| input.viewport().inner_rect.map(|rect| rect.size())) {
+            if !ctx.input(|input| input.viewport().fullscreen.unwrap_or(false)) {
+                self.session.window = [size.x, size.y];
+            }
+        }
+        if self.last_save.elapsed() >= Duration::from_secs(5) {
+            self.save_session();
+            self.last_save = std::time::Instant::now();
+        }
         self.toolbar(ctx);
         self.controls(ctx);
         self.playlist_panel(ctx);
@@ -412,6 +502,12 @@ impl eframe::App for Player {
     }
 }
 
+impl Drop for Player {
+    fn drop(&mut self) {
+        self.save_session();
+    }
+}
+
 fn timestamp(seconds: f64) -> String {
     let seconds = seconds.max(0.0) as u64;
     format!(
@@ -425,6 +521,60 @@ fn timestamp(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires local libmpv and COMPACT_TEST_VIDEO fixture"]
+    fn resumes_and_advances_without_repeated_eof() {
+        let video = PathBuf::from(std::env::var_os("COMPACT_TEST_VIDEO").unwrap());
+        let mut player = Player::new();
+        player.playlist = vec![video.clone(), video.clone()];
+        player
+            .session
+            .positions
+            .insert(video.to_string_lossy().into_owned(), 1.0);
+        player.play(0);
+        player.command(&["set", "mute", "yes"]);
+        let mut pixels = vec![0; 320 * 180 * 4];
+        let tick = |player: &mut Player, pixels: &mut Vec<u8>| {
+            player
+                .backend
+                .as_ref()
+                .unwrap()
+                .render(320, 180, pixels, false)
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let start = std::time::Instant::now();
+        while player.number("time-pos") == 0.0 {
+            tick(&mut player, &mut pixels);
+            assert!(start.elapsed() < Duration::from_secs(5));
+        }
+        assert!(
+            player.number("time-pos") >= 0.9,
+            "loadfile start option must restore the saved position"
+        );
+        while player.selected != Some(1) {
+            tick(&mut player, &mut pixels);
+            player.continuity();
+            assert!(start.elapsed() < Duration::from_secs(10));
+        }
+        assert_eq!(player.session.position(&video), 0.0);
+        while player.property("eof-reached").as_deref() != Some("yes") || !player.eof_armed {
+            tick(&mut player, &mut pixels);
+            if player.property("eof-reached").as_deref() != Some("yes") {
+                player.continuity();
+            }
+            assert!(start.elapsed() < Duration::from_secs(15));
+        }
+        player.continuity();
+        assert_eq!(player.selected, Some(1));
+        assert!(!player.eof_armed);
+        player.session.mode = session::Mode::RepeatAll;
+        player.eof_armed = true;
+        player.continuity();
+        assert_eq!(player.selected, Some(0));
+        player.command(&["stop"]);
+    }
 
     #[test]
     #[ignore = "requires local libmpv and COMPACT_TEST_VIDEO fixture"]
@@ -498,15 +648,17 @@ mod tests {
 }
 
 fn main() -> eframe::Result {
+    let (session, playlist, selected, volume, show_playlist) = session::Session::load();
+    let window = session.window;
     eframe::run_native(
         "轻巧播放器",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1120.0, 700.0])
+                .with_inner_size(window)
                 .with_min_inner_size([960.0, 540.0]),
             ..Default::default()
         },
-        Box::new(|creation| {
+        Box::new(move |creation| {
             ui::configure(&creation.egui_ctx);
             let mut fonts = egui::FontDefinitions::default();
             if let Ok(data) = std::fs::read("/System/Library/Fonts/PingFang.ttc") {
@@ -523,6 +675,11 @@ fn main() -> eframe::Result {
                 creation.egui_ctx.set_fonts(fonts);
             }
             let mut player = Player::new();
+            player.session = session;
+            player.playlist = playlist;
+            player.selected = selected;
+            player.volume = volume;
+            player.show_playlist = show_playlist;
             player.add(std::env::args_os().skip(1).map(PathBuf::from).collect());
             Ok(Box::new(player))
         }),
