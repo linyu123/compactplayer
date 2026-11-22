@@ -35,7 +35,7 @@ bash scripts/install-libmpv.sh x86_64
 bash scripts/package-app.sh x86_64
 ```
 
-输出为 `dist/CompactPlayer-0.1.4-x86_64.dmg`，应用位于 `dist/x86_64/轻巧播放器.app`。
+输出为 `dist/CompactPlayer-0.1.6-x86_64.dmg`，应用位于 `dist/x86_64/轻巧播放器.app`。
 构建时设置 `MACOSX_DEPLOYMENT_TARGET=12.0`，应用声明最低 macOS 12.0。
 Intel 运行库使用同一发行的 amd64 构建，下载按固定 SHA-256 校验。
 在 Apple Silicon 上可交叉编译；运行 Intel 二进制需要 Rosetta。
@@ -73,7 +73,7 @@ Apple Silicon 包使用 `bash scripts/package-app.sh arm64`，两种包和运行
 
 ## 应用打包
 
-独立应用打包：`bash scripts/package-app.sh x86_64`，输出 `dist/CompactPlayer-0.1.4-x86_64.dmg`。
+独立应用打包：`bash scripts/package-app.sh x86_64`，输出 `dist/CompactPlayer-0.1.6-x86_64.dmg`。
 Intel 包适用于 macOS 12+，包含播放运行库和图标，使用本地临时签名，尚未公证。
 
 ## 0.1.4 全屏与操作体验（开发分支）
@@ -127,3 +127,18 @@ Intel 包适用于 macOS 12+，包含播放运行库和图标，使用本地临�
 验证：`cargo test --bin compact-player`。
 真实内核回归测试需提供超过一秒、短于十秒的视频：
 `COMPACT_TEST_VIDEO=/path/test.mp4 cargo test --bin compact-player detects_invalid_media_and_replays_after_eof -- --ignored`。
+
+## 0.1.6 截取与导出（开发分支）
+
+基于 main 0.1.4；不包含 release-0.1.5 的诊断与解码修改。
+顶部“图片截取”和“视频截取”分别打开两个独立窗口：
+
+- 前一帧 / 后一帧会暂停播放，也可使用英文逗号 `,` / 句号 `.`。反向逐帧在长 GOP 视频上可能较慢。
+- PNG 截图直接保存播放器已经显示的画面，包含当前字幕，可选应用界面旋转；分辨率受显示缓冲限制，不再调用独立截图渲染。
+- 点击开始或结束输入框后拖动播放进度条，选中时间会实时更新；也可输入 `时:分:秒.毫秒`（如 `01:25:30.500`），保留中间视频以去掉片头片尾；可跳转预览切点。
+- 精确导出使用 H.264/AAC 重编码；快速导出复制编码，切点受关键帧影响，部分源编码可能无法封装进 MP4。
+- 导出保留首个视频和首个音轨，不包含字幕及界面旋转效果；不覆盖已有文件。支持删除一段中间广告：选择“删除中间广告”，标记广告开始/结束，前后两段拼接，默认快速复制，也可选择精确重编码；支持有音轨和无音轨视频。快速模式受关键帧限制，可能残留部分广告或出现短暂画面异常。多广告区间、批量提帧和 JPEG 留待后续。
+- 导出需要 FFmpeg，本机自动查找 Homebrew 路径，也可在面板选择可执行文件。当前安装包尚不内置 FFmpeg；播放和截图不需要 FFmpeg。
+- 后台导出显示进度、可取消，取消和失败清理任务临时文件；正常关闭应用会终止导出。
+
+验证导出：`COMPACT_TEST_VIDEO=/path/video.mp4 cargo test --offline --bin compact-player exports_and_cancels_without_overwriting -- --ignored`。

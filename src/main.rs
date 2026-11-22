@@ -1,3 +1,4 @@
+mod capture;
 mod interaction;
 mod macos_open;
 mod media;
@@ -36,6 +37,7 @@ struct Player {
     interaction: interaction::Interaction,
     mode: playback::Mode,
     eof_armed: bool,
+    capture: capture::Capture,
 }
 
 impl Player {
@@ -89,6 +91,7 @@ impl Player {
             interaction: interaction::Interaction::default(),
             mode: playback::Mode::default(),
             eof_armed: false,
+            capture: capture::Capture::default(),
         }
     }
 
@@ -121,6 +124,7 @@ impl Player {
         };
         if self.command(&["loadfile", &path.to_string_lossy(), "replace"]) {
             self.eof_armed = false;
+            self.capture.reset_range();
             self.rotation = 0;
             self.command(&["set", "pause", "no"]);
             self.command(&["set", "speed", "1"]);
@@ -129,6 +133,7 @@ impl Player {
             self.selected = Some(index);
             self.playing = true;
             self.texture = None;
+            self.capture.frame = None;
             self.status = path
                 .file_name()
                 .unwrap_or_default()
@@ -356,9 +361,12 @@ impl eframe::App for Player {
         let active = self.playing
             && self.property("pause").as_deref() != Some("yes")
             && self.property("eof-reached").as_deref() != Some("yes");
-        let chrome = self
-            .interaction
-            .show_controls(ctx, fullscreen, active, self.notice.is_some());
+        let chrome = self.interaction.show_controls(
+            ctx,
+            fullscreen,
+            active,
+            self.notice.is_some() || self.capture.open || self.capture.image_open,
+        );
         self.shortcuts(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(chrome));
         if chrome {
@@ -366,6 +374,7 @@ impl eframe::App for Player {
             self.controls(ctx);
         }
         self.playlist_panel(ctx);
+        self.capture_window(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
@@ -394,8 +403,11 @@ impl eframe::App for Player {
                             resized || self.texture.is_none(),
                         ) {
                             Ok(true) => {
-                                let image =
-                                    egui::ColorImage::from_rgba_unmultiplied(size, &self.pixels);
+                                let image = std::sync::Arc::new(
+                                    egui::ColorImage::from_rgba_unmultiplied(size, &self.pixels),
+                                );
+                                self.capture.frame = Some(image.clone());
+                                let image = egui::ImageData::Color(image);
                                 if let Some(texture) = &mut self.texture {
                                     texture.set(image, egui::TextureOptions::LINEAR);
                                 } else {
