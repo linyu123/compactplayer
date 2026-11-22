@@ -705,11 +705,12 @@ dependencies = [
 
 [[package]]
 name = "compact-player"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "eframe",
  "image",
  "libloading",
+ "objc2 0.5.3",
  "rfd",
  "serde_json",
 ]

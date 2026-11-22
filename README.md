@@ -35,7 +35,7 @@ bash scripts/install-libmpv.sh x86_64
 bash scripts/package-app.sh x86_64
 ```
 
-输出为 `dist/CompactPlayer-0.1.2-x86_64.dmg`，应用位于 `dist/x86_64/轻巧播放器.app`。
+输出为 `dist/CompactPlayer-0.1.4-x86_64.dmg`，应用位于 `dist/x86_64/轻巧播放器.app`。
 构建时设置 `MACOSX_DEPLOYMENT_TARGET=12.0`，应用声明最低 macOS 12.0。
 Intel 运行库使用同一发行的 amd64 构建，下载按固定 SHA-256 校验。
 在 Apple Silicon 上可交叉编译；运行 Intel 二进制需要 Rosetta。
@@ -73,8 +73,31 @@ Apple Silicon 包使用 `bash scripts/package-app.sh arm64`，两种包和运行
 
 ## 应用打包
 
-独立应用打包：`bash scripts/package-app.sh x86_64`，输出 `dist/CompactPlayer-0.1.2-x86_64.dmg`。
+独立应用打包：`bash scripts/package-app.sh x86_64`，输出 `dist/CompactPlayer-0.1.4-x86_64.dmg`。
 Intel 包适用于 macOS 12+，包含播放运行库和图标，使用本地临时签名，尚未公证。
+
+## 0.1.4 全屏与操作体验（开发分支）
+
+基于 main 0.1.2，移入 release-0.1.3 的自动连播和三种播放模式。
+顶部播放模式按钮依次切换顺序播放、单曲循环、列表循环；默认顺序播放，播完列表末项后停止。
+自动切换或循环时从头播放。此版本未移入断点续播及会话保存，重启后恢复默认模式。
+全屏播放时，静止三秒自动隐藏菜单、控制栏和鼠标，移动鼠标或按键后恢复；暂停、播完、拖动或提示窗口打开时保留控制栏。
+
+| 快捷键 | 操作 |
+| --- | --- |
+| 双击视频 / F | 切换全屏 |
+| Esc | 退出全屏 |
+| 空格 | 播放 / 停止 / 重播 |
+| ⌘O | 打开文件 |
+| ← / → | 后退 / 前进 5 秒 |
+| ↑ / ↓ | 音量增减 5% |
+| `[` / `]` / `\` | 减速 / 加速 / 恢复正常倍速 |
+| R | 顺时针旋转 90° |
+| PageUp / PageDown | 上一项 / 下一项 |
+| P | 切换列表（窗口模式） |
+
+安装应用后可在 Finder 的“打开方式”中选择播放器；在“显示简介 → 打开方式 → 全部更改”中可设为默认播放器。应用不会主动修改系统默认关联。
+支持首次启动和已运行时的 Finder 文件打开事件，包括中文和空格路径。
 
 ## 应用图标
 

@@ -49,6 +49,13 @@ impl Player {
                     if ui.button("打开").clicked() {
                         self.open();
                     }
+                    if ui
+                        .button(self.mode.label())
+                        .on_hover_text("点击切换：顺序播放 → 单曲循环 → 列表循环")
+                        .clicked()
+                    {
+                        self.mode.cycle();
+                    }
                     if ui.button("播放内核").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_title("选择 libmpv 播放内核")
@@ -95,10 +102,12 @@ impl Player {
                     if ui.button("切换音轨").clicked() {
                         self.switch_audio();
                     }
-                    if ui.button("全屏").clicked() {
-                        let fullscreen =
-                            ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+                    if ui
+                        .button(if fullscreen { "退出全屏" } else { "全屏" })
+                        .on_hover_text("双击画面或按 F 切换全屏，Esc 退出")
+                        .clicked()
+                    {
+                        self.toggle_fullscreen(ctx);
                     }
                     if ui
                         .add_enabled(self.playing, egui::Button::new("旋转 90°"))

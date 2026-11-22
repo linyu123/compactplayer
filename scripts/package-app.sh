@@ -24,4 +24,4 @@ staging=$(mktemp -d -t compact-player-dmg)
 trap 'rm -rf "$staging"' EXIT
 ditto "$bundle" "$staging/轻巧播放器.app"
 ln -s /Applications "$staging/Applications"
-hdiutil create -volname '轻巧播放器' -srcfolder "$staging" -ov -format UDZO "dist/CompactPlayer-0.1.2-${architecture}.dmg"
+hdiutil create -volname '轻巧播放器' -srcfolder "$staging" -ov -format UDZO "dist/CompactPlayer-0.1.4-${architecture}.dmg"

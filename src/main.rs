@@ -1,5 +1,8 @@
+mod interaction;
+mod macos_open;
 mod media;
 mod mpv;
+mod playback;
 mod ui;
 
 use eframe::egui;
@@ -30,6 +33,9 @@ struct Player {
     speed: f64,
     rewinding: bool,
     last_rewind: std::time::Instant,
+    interaction: interaction::Interaction,
+    mode: playback::Mode,
+    eof_armed: bool,
 }
 
 impl Player {
@@ -80,6 +86,9 @@ impl Player {
             speed: 1.0,
             rewinding: false,
             last_rewind: std::time::Instant::now(),
+            interaction: interaction::Interaction::default(),
+            mode: playback::Mode::default(),
+            eof_armed: false,
         }
     }
 
@@ -111,6 +120,7 @@ impl Player {
             return;
         };
         if self.command(&["loadfile", &path.to_string_lossy(), "replace"]) {
+            self.eof_armed = false;
             self.rotation = 0;
             self.command(&["set", "pause", "no"]);
             self.command(&["set", "speed", "1"]);
@@ -124,6 +134,24 @@ impl Player {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
+        }
+    }
+
+    fn advance_after_eof(&mut self) {
+        if !self.playing {
+            return;
+        }
+        match self.property("eof-reached").as_deref() {
+            Some("no") => self.eof_armed = true,
+            Some("yes") if self.eof_armed => {
+                self.eof_armed = false;
+                if let Some(index) = self.selected {
+                    if let Some(next) = self.mode.next(index, self.playlist.len()) {
+                        self.play(next);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -318,16 +346,25 @@ impl eframe::App for Player {
         if !paths.is_empty() {
             self.add(paths);
         }
-        if ctx.input(|input| input.key_pressed(egui::Key::Space)) {
-            self.toggle_play();
+        let opened = macos_open::take();
+        if !opened.is_empty() {
+            self.add(opened);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        for (key, offset) in [(egui::Key::ArrowLeft, "-5"), (egui::Key::ArrowRight, "5")] {
-            if ctx.input(|input| input.key_pressed(key)) {
-                self.seek(offset.parse().unwrap_or(0.0));
-            }
+        self.advance_after_eof();
+        let fullscreen = ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
+        let active = self.playing
+            && self.property("pause").as_deref() != Some("yes")
+            && self.property("eof-reached").as_deref() != Some("yes");
+        let chrome = self
+            .interaction
+            .show_controls(ctx, fullscreen, active, self.notice.is_some());
+        self.shortcuts(ctx);
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(chrome));
+        if chrome {
+            self.toolbar(ctx);
+            self.controls(ctx);
         }
-        self.toolbar(ctx);
-        self.controls(ctx);
         self.playlist_panel(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
@@ -375,7 +412,10 @@ impl eframe::App for Player {
                     }
                 }
                 if let Some(texture) = &self.texture {
-                    let (rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+                    let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click());
+                    if response.double_clicked() {
+                        self.toggle_fullscreen(ctx);
+                    }
                     let image_rect = egui::Rect::from_center_size(rect.center(), render_size);
                     egui::Image::new(texture)
                         .fit_to_exact_size(render_size)
@@ -428,6 +468,67 @@ fn timestamp(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires local libmpv and COMPACT_TEST_VIDEO fixture"]
+    fn automatic_playback_modes() {
+        let video = PathBuf::from(std::env::var_os("COMPACT_TEST_VIDEO").unwrap());
+        let mut player = Player::new();
+        player.playlist = vec![video.clone(), video];
+        let mut pixels = vec![0; 320 * 180 * 4];
+        for (mode, current, expected, reload) in [
+            (playback::Mode::Sequential, 0, 1, true),
+            (playback::Mode::Sequential, 1, 1, false),
+            (playback::Mode::RepeatOne, 1, 1, true),
+            (playback::Mode::RepeatAll, 1, 0, true),
+        ] {
+            player.mode = mode;
+            player.play(current);
+            player.command(&["set", "mute", "yes"]);
+            player.command(&["set", "speed", "10"]);
+            let start = std::time::Instant::now();
+            loop {
+                player
+                    .backend
+                    .as_ref()
+                    .unwrap()
+                    .render(320, 180, &mut pixels, false)
+                    .unwrap();
+                if player.property("eof-reached").as_deref() == Some("no") {
+                    player.advance_after_eof();
+                }
+                if player.property("eof-reached").as_deref() == Some("yes") && player.eof_armed {
+                    break;
+                }
+                assert!(start.elapsed() < Duration::from_secs(10));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            player.advance_after_eof();
+            assert_eq!(player.selected, Some(expected), "{mode:?}");
+            assert!(!player.eof_armed);
+            if reload {
+                while player.property("eof-reached").as_deref() != Some("no")
+                    || player.number("time-pos") <= 0.0
+                {
+                    player
+                        .backend
+                        .as_ref()
+                        .unwrap()
+                        .render(320, 180, &mut pixels, false)
+                        .unwrap();
+                    assert!(start.elapsed() < Duration::from_secs(15));
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(player.number("time-pos") < 1.0);
+            } else {
+                for _ in 0..5 {
+                    player.advance_after_eof();
+                }
+                assert_eq!(player.property("eof-reached").as_deref(), Some("yes"));
+            }
+            player.command(&["stop"]);
+        }
+    }
 
     #[test]
     #[ignore = "requires local libmpv and COMPACT_TEST_VIDEO fixture"]
@@ -501,6 +602,7 @@ mod tests {
 }
 
 fn main() -> eframe::Result {
+    macos_open::install();
     eframe::run_native(
         "轻巧播放器",
         eframe::NativeOptions {
@@ -526,7 +628,13 @@ fn main() -> eframe::Result {
                 creation.egui_ctx.set_fonts(fonts);
             }
             let mut player = Player::new();
-            player.add(std::env::args_os().skip(1).map(PathBuf::from).collect());
+            player.add(
+                std::env::args_os()
+                    .skip(1)
+                    .filter(|arg| !arg.to_string_lossy().starts_with("-psn_"))
+                    .map(PathBuf::from)
+                    .collect(),
+            );
             Ok(Box::new(player))
         }),
     )
