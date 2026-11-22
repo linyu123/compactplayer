@@ -1,4 +1,6 @@
+mod details;
 mod interaction;
+mod logging;
 mod macos_open;
 mod media;
 mod mpv;
@@ -36,6 +38,7 @@ struct Player {
     interaction: interaction::Interaction,
     mode: playback::Mode,
     eof_armed: bool,
+    details: details::Details,
 }
 
 impl Player {
@@ -57,6 +60,11 @@ impl Player {
                     .join("runtime/libmpv-libs_v0.7.3_macos-arm64-video-default/libmpv.dylib")
             });
         let result = mpv::Mpv::new(&path);
+        logging::record(format!(
+            "播放库={} 初始化={:?}",
+            path.display(),
+            result.as_ref().map(|_| "成功")
+        ));
         let status = match &result {
             Ok(backend) => format!(
                 "准备就绪 / {}",
@@ -86,6 +94,7 @@ impl Player {
             interaction: interaction::Interaction::default(),
             mode: playback::Mode::default(),
             eof_armed: false,
+            details: details::Details::default(),
         }
     }
 
@@ -97,6 +106,10 @@ impl Player {
         match backend.command(values) {
             Ok(()) => true,
             Err(error) => {
+                logging::record(format!(
+                    "命令失败 {}：{error}",
+                    values.first().unwrap_or(&"unknown")
+                ));
                 self.status = error;
                 false
             }
@@ -116,7 +129,12 @@ impl Player {
         let Some(path) = self.playlist.get(index).cloned() else {
             return;
         };
+        self.poll_backend();
+        logging::record(format!("打开文件 {}", path.display()));
         if self.command(&["loadfile", &path.to_string_lossy(), "replace"]) {
+            self.details.tracks.clear();
+            self.details.sub_delay = 0.0;
+            self.command(&["set", "sub-delay", "0"]);
             self.eof_armed = false;
             self.rotation = 0;
             self.command(&["set", "pause", "no"]);
@@ -249,33 +267,19 @@ impl Player {
             self.add(paths);
         }
     }
-
-    fn audio_tracks(&self) -> Vec<serde_json::Value> {
-        self.property("track-list")
-            .and_then(|value| serde_json::from_str::<Vec<serde_json::Value>>(&value).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|track| track["type"] == "audio")
-            .collect()
-    }
-
-    fn switch_audio(&mut self) {
-        let tracks = self.audio_tracks();
-        if tracks.is_empty() {
-            self.status = "当前文件没有音轨".into();
-            return;
-        }
-        let current = tracks.iter().position(|track| track["selected"] == true);
-        let next = current.map_or(0, |index| (index + 1) % tracks.len());
-        if let Some(id) = tracks[next]["id"].as_i64() {
-            self.command(&["set", "aid", &id.to_string()]);
-        }
-    }
 }
 
 impl eframe::App for Player {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_millis(16));
+        ctx.request_repaint_after(Duration::from_millis(
+            if self.playing && self.property("pause").as_deref() != Some("yes") {
+                16
+            } else {
+                100
+            },
+        ));
+        self.poll_backend();
+        self.refresh_details();
         if self.brand.is_none() {
             if let Ok(image) = image::load_from_memory(include_bytes!("../resources/AppIcon.png")) {
                 let image = image
@@ -353,9 +357,15 @@ impl eframe::App for Player {
         let active = self.playing
             && self.property("pause").as_deref() != Some("yes")
             && self.property("eof-reached").as_deref() != Some("yes");
-        let chrome = self
-            .interaction
-            .show_controls(ctx, fullscreen, active, self.notice.is_some());
+        let chrome = self.interaction.show_controls(
+            ctx,
+            fullscreen,
+            active,
+            self.notice.is_some()
+                || self.details.subtitle_open
+                || self.details.audio_open
+                || self.details.diagnostics_open,
+        );
         self.shortcuts(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(chrome));
         if chrome {
@@ -363,6 +373,7 @@ impl eframe::App for Player {
             self.controls(ctx);
         }
         self.playlist_panel(ctx);
+        self.details_windows(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
@@ -404,7 +415,14 @@ impl eframe::App for Player {
                                 }
                             }
                             Ok(false) => {}
-                            Err(error) => self.status = error,
+                            Err(error) => {
+                                logging::record(format!("渲染失败：{error}"));
+                                self.notice = Some(format!(
+                                    "画面渲染失败：{error}\n请尝试切换软件解码，并查看诊断日志。"
+                                ));
+                                self.status = error;
+                                self.playing = false;
+                            }
                         }
                     }
                 }
@@ -599,6 +617,7 @@ mod tests {
 }
 
 fn main() -> eframe::Result {
+    logging::init();
     macos_open::install();
     eframe::run_native(
         "轻巧播放器",

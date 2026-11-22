@@ -68,6 +68,7 @@ impl Player {
                                     self.backend = Some(backend);
                                     self.playing = false;
                                     self.texture = None;
+                                    self.details.tracks.clear();
                                     self.status = "播放内核已就绪".into();
                                 }
                                 Err(error) => self.status = error,
@@ -90,17 +91,26 @@ impl Player {
                     {
                         self.show_playlist = !self.show_playlist;
                     }
-                    if ui.button("字幕").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("加载字幕文件")
-                            .add_filter("字幕文件", &["srt", "ass", "ssa", "vtt"])
-                            .pick_file()
-                        {
-                            self.command(&["sub-add", &path.to_string_lossy(), "select"]);
-                        }
+                    if ui
+                        .button("字幕")
+                        .on_hover_text("选择字幕、加载外挂字幕、调整字幕延迟")
+                        .clicked()
+                    {
+                        self.details.subtitle_open = true;
                     }
-                    if ui.button("切换音轨").clicked() {
-                        self.switch_audio();
+                    if ui
+                        .button("音轨")
+                        .on_hover_text(self.selected_track_label("audio"))
+                        .clicked()
+                    {
+                        self.details.audio_open = true;
+                    }
+                    if ui
+                        .button("诊断")
+                        .on_hover_text("解码设置、播放统计和日志")
+                        .clicked()
+                    {
+                        self.details.diagnostics_open = true;
                     }
                     if ui
                         .button(if fullscreen { "退出全屏" } else { "全屏" })
