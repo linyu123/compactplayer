@@ -90,6 +90,12 @@ impl Player {
                     {
                         self.show_playlist = !self.show_playlist;
                     }
+                    if ui.button("图片截取").clicked() {
+                        self.capture.image_open = true;
+                    }
+                    if ui.button("视频截取").clicked() {
+                        self.capture.open = true;
+                    }
                     if ui.button("字幕").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_title("加载字幕文件")
@@ -140,6 +146,7 @@ impl Player {
                     )
                     .changed()
                 {
+                    self.capture.set_from_slider(position);
                     self.command(&["seek", &position.to_string(), "absolute+exact"]);
                 }
                 ui.horizontal(|ui| {
