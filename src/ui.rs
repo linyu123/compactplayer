@@ -49,6 +49,13 @@ impl Player {
                     if ui.button("打开").clicked() {
                         self.open();
                     }
+                    if ui
+                        .button(self.session.mode.label())
+                        .on_hover_text("点击切换：顺序播放 → 单曲循环 → 列表循环")
+                        .clicked()
+                    {
+                        self.session.mode.cycle();
+                    }
                     if ui.button("播放内核").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_title("选择 libmpv 播放内核")
@@ -57,6 +64,7 @@ impl Player {
                         {
                             match mpv::Mpv::new(&path) {
                                 Ok(backend) => {
+                                    self.remember_position();
                                     self.runtime = path;
                                     self.backend = Some(backend);
                                     self.playing = false;
@@ -301,6 +309,7 @@ impl Player {
                             )
                             .clicked()
                         {
+                            self.remember_position();
                             if self.backend.is_none() || self.command(&["stop"]) {
                                 self.playlist.clear();
                                 self.intake = None;
@@ -363,6 +372,7 @@ impl Player {
                     }
                 });
                 if let Some(index) = removed {
+                    self.remember_position();
                     let current = self.selected == Some(index);
                     if !current || self.backend.is_none() || self.command(&["stop"]) {
                         self.playlist.remove(index);
