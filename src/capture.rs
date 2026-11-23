@@ -468,6 +468,27 @@ fn export_with_removal(
 }
 
 impl Player {
+    fn capture_filename(&self, screenshot: bool) -> String {
+        let stem = self
+            .selected
+            .and_then(|index| self.playlist.get(index))
+            .and_then(|path| path.file_stem())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "视频".into());
+        let safe_time = |seconds| timecode(seconds).replace(':', "-");
+        if screenshot {
+            format!("{stem}_截图_{}.png", safe_time(self.number("time-pos")))
+        } else if self.capture.remove_ad {
+            format!("{stem}_去广告.mp4")
+        } else {
+            format!(
+                "{stem}_截取_{}_{}.mp4",
+                safe_time(self.capture.start),
+                safe_time(self.capture.end)
+            )
+        }
+    }
+
     fn save_capture(&mut self, path: &Path, display: bool) -> Result<(), String> {
         let frame = self
             .capture
@@ -551,7 +572,7 @@ impl Player {
                         let frozen = self.capture.frame.clone();
                         let rotation = self.rotation;
                         if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name("截图.png")
+                            .set_file_name(self.capture_filename(true))
                             .add_filter("PNG 图片", &["png"])
                             .save_file()
                         {
@@ -738,7 +759,7 @@ impl Player {
                 {
                     if let Some(input) = self.selected.and_then(|i| self.playlist.get(i)).cloned() {
                         if let Some(output) = rfd::FileDialog::new()
-                            .set_file_name("截取片段.mp4")
+                            .set_file_name(self.capture_filename(false))
                             .add_filter("MP4 视频", &["mp4"])
                             .save_file()
                         {
