@@ -120,3 +120,7 @@ macOS 桌面启动可用 `bash scripts/run-app.sh /absolute/path/video.mkv`，�
 - 后台导出显示进度、可取消，取消和失败清理任务临时文件；正常关闭应用会终止导出。
 
 验证导出：`COMPACT_TEST_VIDEO=/path/video.mp4 cargo test --offline --bin compact-player exports_and_cancels_without_overwriting -- --ignored`。
+
+### 0.1.6 Retina 显示调整（待实机验证）
+
+视频按窗口的实际像素密度输出，仅渲染有效画面，黑边由界面绘制。渲染尺寸不超过源视频显示尺寸，最高约 4K 像素预算，支持手动旋转；保留原有软件解码与色彩处理。高分屏下可减少低分辨率纹理放大的细节损失，但处理像素增多，不能保证 CPU 占用降低。旧 Intel 的流畅度及与 QuickTime 的画质对比仍需实机验证。

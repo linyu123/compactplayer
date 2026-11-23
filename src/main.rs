@@ -5,6 +5,7 @@ mod media;
 mod mpv;
 mod playback;
 mod ui;
+mod video_layout;
 
 use eframe::egui;
 use std::path::PathBuf;
@@ -376,18 +377,24 @@ impl eframe::App for Player {
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
                 let available = ui.available_size();
-                let render_size = if self.rotation % 180 == 90 {
-                    egui::vec2(available.y, available.x)
-                } else {
-                    available
+                let dimension = |name: &str| {
+                    self.property(name)
+                        .and_then(|value| value.parse::<f32>().ok())
+                        .filter(|value| value.is_finite() && *value > 0.0)
                 };
-                let scale = (1920.0 / render_size.x.max(1.0))
-                    .min(1080.0 / render_size.y.max(1.0))
-                    .min(1.0);
-                let size = [
-                    (render_size.x * scale).max(1.0) as usize,
-                    (render_size.y * scale).max(1.0) as usize,
-                ];
+                let source = match (
+                    dimension("video-out-params/dw"),
+                    dimension("video-out-params/dh"),
+                ) {
+                    (Some(width), Some(height)) => [width, height],
+                    _ => [available.x.max(1.0), available.y.max(1.0)],
+                };
+                let (render_size, size) = video_layout::layout(
+                    available,
+                    source,
+                    ctx.pixels_per_point(),
+                    self.rotation % 180 == 90,
+                );
                 let resized = self.size != size;
                 self.size = size;
                 self.pixels.resize(size[0] * size[1] * 4, 0);
