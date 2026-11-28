@@ -23,6 +23,7 @@ struct Player {
     playlist: Vec<PathBuf>,
     selected: Option<usize>,
     texture: Option<egui::TextureHandle>,
+    video_image: Option<std::sync::Arc<egui::ColorImage>>,
     brand: Option<egui::TextureHandle>,
     pixels: Vec<u8>,
     size: [usize; 2],
@@ -78,6 +79,7 @@ impl Player {
             playlist: Vec::new(),
             selected: None,
             texture: None,
+            video_image: None,
             brand: None,
             pixels: Vec::new(),
             size: [0, 0],
@@ -290,7 +292,8 @@ impl eframe::App for Player {
         let active = self.playing
             && self.property("pause").as_deref() != Some("yes")
             && self.property("eof-reached").as_deref() != Some("yes");
-        ctx.request_repaint_after(Duration::from_millis(if active { 16 } else { 100 }));
+        let fps = self.decoder.fps;
+        ctx.request_repaint_after(Duration::from_millis(repaint_interval_ms(active, fps)));
         self.refresh_decoder();
         if self.brand.is_none() {
             if let Ok(image) = image::load_from_memory(include_bytes!("../resources/AppIcon.png")) {
@@ -413,11 +416,29 @@ impl eframe::App for Player {
                             resized || self.texture.is_none(),
                         ) {
                             Ok(true) => {
-                                let image = std::sync::Arc::new(video_layout::opaque_frame(
-                                    size,
-                                    &self.pixels,
-                                ));
-                                self.capture.frame = Some(image.clone());
+                                let image = match self.video_image.as_mut() {
+                                    Some(existing)
+                                        if existing.size == size
+                                            && std::sync::Arc::strong_count(existing) == 1 =>
+                                    {
+                                        std::sync::Arc::get_mut(existing).map(|existing| {
+                                            video_layout::update_opaque_frame(
+                                                existing,
+                                                size,
+                                                &self.pixels,
+                                            );
+                                        });
+                                        existing.clone()
+                                    }
+                                    _ => std::sync::Arc::new(video_layout::opaque_frame(
+                                        size,
+                                        &self.pixels,
+                                    )),
+                                };
+                                self.video_image = Some(image.clone());
+                                if self.capture.image_open {
+                                    self.capture.frame = Some(image.clone());
+                                }
                                 let image = egui::ImageData::Color(image);
                                 if let Some(texture) = &mut self.texture {
                                     texture.set(image, egui::TextureOptions::LINEAR);
@@ -478,6 +499,19 @@ impl eframe::App for Player {
     }
 }
 
+fn repaint_interval_ms(active: bool, fps: f64) -> u64 {
+    if !active {
+        return 100;
+    }
+    if !fps.is_finite() || fps <= 0.0 {
+        return 16;
+    }
+    if fps >= 60.0 {
+        return 16;
+    }
+    (1000.0 / fps).round().clamp(16.0, 100.0) as u64
+}
+
 fn timestamp(seconds: f64) -> String {
     let seconds = seconds.max(0.0) as u64;
     format!(
@@ -491,6 +525,16 @@ fn timestamp(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repaint_interval_matches_source_fps() {
+        assert_eq!(repaint_interval_ms(false, 60.0), 100);
+        assert_eq!(repaint_interval_ms(true, 0.0), 16);
+        assert_eq!(repaint_interval_ms(true, 24.0), 42);
+        assert_eq!(repaint_interval_ms(true, 30.0), 33);
+        assert_eq!(repaint_interval_ms(true, 60.0), 16);
+        assert_eq!(repaint_interval_ms(true, 120.0), 16);
+    }
 
     #[test]
     #[ignore = "requires local libmpv and COMPACT_TEST_VIDEO fixture"]

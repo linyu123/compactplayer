@@ -7,6 +7,7 @@ pub struct Decoder {
     pub hardware: bool,
     pub label: String,
     pub source_size: [f32; 2],
+    pub fps: f64,
     pub retina: bool,
     stats: String,
     refresh: Instant,
@@ -19,6 +20,7 @@ impl Default for Decoder {
             hardware: true,
             label: "解码：等待视频".into(),
             source_size: [1920.0, 1080.0],
+            fps: 0.0,
             retina: true,
             stats: String::new(),
             refresh: Instant::now() - Duration::from_secs(1),
@@ -53,6 +55,12 @@ impl Player {
         let width = self.number("video-out-params/dw") as f32;
         let height = self.number("video-out-params/dh") as f32;
         self.decoder.source_size = effective_source_size(self.playing, &video, width, height);
+        let fps = self.number("container-fps");
+        self.decoder.fps = if fps.is_finite() && fps > 0.0 {
+            fps
+        } else {
+            0.0
+        };
         self.decoder.label = if !self.playing || video.is_empty() {
             "解码：等待视频".into()
         } else if hardware_decoder_active(&actual) {

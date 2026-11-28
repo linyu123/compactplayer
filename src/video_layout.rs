@@ -28,6 +28,14 @@ pub fn layout(
     )
 }
 
+pub fn update_opaque_frame(image: &mut egui::ColorImage, size: [usize; 2], pixels: &[u8]) {
+    assert_eq!(image.size, size);
+    assert_eq!(pixels.len(), size[0] * size[1] * 4);
+    for (target, source) in image.pixels.iter_mut().zip(pixels.chunks_exact(4)) {
+        *target = egui::Color32::from_rgb(source[0], source[1], source[2]);
+    }
+}
+
 pub fn opaque_frame(size: [usize; 2], pixels: &[u8]) -> egui::ColorImage {
     assert_eq!(pixels.len(), size[0] * size[1] * 4);
     // 视频画面已合成字幕，不需要 egui 对每个像素做透明度预乘。
@@ -66,5 +74,12 @@ mod tests {
             opaque_frame([1, 1], &[10, 20, 30, 0]).pixels[0].to_array(),
             [10, 20, 30, 255]
         );
+    }
+
+    #[test]
+    fn reuses_color_buffer_and_updates_rgb_pixels() {
+        let mut image = opaque_frame([1, 1], &[10, 20, 30, 0]);
+        update_opaque_frame(&mut image, [1, 1], &[200, 150, 100, 255]);
+        assert_eq!(image.pixels[0].to_array(), [200, 150, 100, 255]);
     }
 }
