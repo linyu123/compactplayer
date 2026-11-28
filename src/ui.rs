@@ -350,41 +350,47 @@ impl Player {
                 }
                 let mut selected = None;
                 let mut removed = None;
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (index, path) in self.playlist.iter().enumerate() {
-                        let active = self.selected == Some(index);
-                        let label = format!(
-                            "{}  {}",
-                            if active {
-                                "▶".into()
-                            } else {
-                                format!("{:02}", index + 1)
-                            },
-                            path.file_name().unwrap_or_default().to_string_lossy()
-                        );
-                        let response = ui
-                            .add_sized(
-                                [ui.available_width(), 38.0],
-                                egui::Button::new(RichText::new(label).color(if active {
-                                    ACCENT
+                egui::ScrollArea::vertical().show_rows(
+                    ui,
+                    38.0,
+                    self.playlist.len(),
+                    |ui, range| {
+                        for index in range {
+                            let path = &self.playlist[index];
+                            let active = self.selected == Some(index);
+                            let label = format!(
+                                "{}  {}",
+                                if active {
+                                    "▶".into()
                                 } else {
-                                    Color32::from_rgb(198, 206, 218)
-                                }))
-                                .selected(active)
-                                .truncate(),
-                            )
-                            .on_hover_text(path.display().to_string());
-                        if response.clicked() {
-                            selected = Some(index);
-                        }
-                        response.context_menu(|ui| {
-                            if ui.button("从播放列表删除").clicked() {
-                                removed = Some(index);
-                                ui.close_menu();
+                                    format!("{:02}", index + 1)
+                                },
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            );
+                            let response = ui
+                                .add_sized(
+                                    [ui.available_width(), 38.0],
+                                    egui::Button::new(RichText::new(label).color(if active {
+                                        ACCENT
+                                    } else {
+                                        Color32::from_rgb(198, 206, 218)
+                                    }))
+                                    .selected(active)
+                                    .truncate(),
+                                )
+                                .on_hover_text(path.display().to_string());
+                            if response.clicked() {
+                                selected = Some(index);
                             }
-                        });
-                    }
-                });
+                            response.context_menu(|ui| {
+                                if ui.button("从播放列表删除").clicked() {
+                                    removed = Some(index);
+                                    ui.close_menu();
+                                }
+                            });
+                        }
+                    },
+                );
                 if let Some(index) = removed {
                     let current = self.selected == Some(index);
                     if !current || self.backend.is_none() || self.command(&["stop"]) {
