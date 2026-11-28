@@ -9,6 +9,7 @@ pub struct Decoder {
     pub source_size: [f32; 2],
     pub fps: f64,
     pub retina: bool,
+    pub gamma_adjusted: bool,
     stats: String,
     refresh: Instant,
 }
@@ -22,10 +23,23 @@ impl Default for Decoder {
             source_size: [1920.0, 1080.0],
             fps: 0.0,
             retina: true,
+            gamma_adjusted: false,
             stats: String::new(),
             refresh: Instant::now() - Duration::from_secs(1),
         }
     }
+}
+
+/// 返回需要切换到的状态：Some(true) 添加滤镜，Some(false) 移除，None 不变。
+/// 滤镜生效后 mpv 报告的 gamma 为 gamma2.0，此时保持已添加状态。
+fn system_gamma_filter(gamma: &str, adjusted: bool) -> Option<bool> {
+    let wanted = match gamma {
+        "" => return None,
+        "bt.1886" => true,
+        "gamma2.0" => adjusted,
+        _ => false,
+    };
+    (wanted != adjusted).then_some(wanted)
 }
 
 fn hardware_decoder_active(actual: &str) -> bool {
@@ -55,6 +69,7 @@ impl Player {
         let width = self.number("video-out-params/dw") as f32;
         let height = self.number("video-out-params/dh") as f32;
         self.decoder.source_size = effective_source_size(self.playing, &video, width, height);
+        self.match_system_gamma();
         let fps = self.number("container-fps");
         self.decoder.fps = if fps.is_finite() && fps > 0.0 {
             fps
@@ -108,6 +123,23 @@ impl Player {
                 ));
             }
             self.decoder.stats = lines.join("\n");
+        }
+    }
+
+    /// macOS 系统播放器把未标注或 bt.1886 的 SDR 视频按约 2.0 的 gamma 显示，
+    /// mpv 默认按 bt.1886 解释，画面明显偏暗。只调整这类源，HDR 等其他传输特性保持不变。
+    fn match_system_gamma(&mut self) {
+        let gamma = self.property("video-params/gamma").unwrap_or_default();
+        let want = system_gamma_filter(&gamma, self.decoder.gamma_adjusted);
+        if let Some(adjust) = want {
+            let ok = if adjust {
+                self.command(&["vf", "add", "@system-gamma:format=gamma=gamma2.0"])
+            } else {
+                self.command(&["vf", "remove", "@system-gamma"])
+            };
+            if ok {
+                self.decoder.gamma_adjusted = adjust;
+            }
         }
     }
 
@@ -165,6 +197,17 @@ mod tests {
         assert!(hardware_decoder_active("videotoolbox"));
         assert!(!hardware_decoder_active("no"));
         assert!(!hardware_decoder_active(""));
+    }
+
+    #[test]
+    fn adjusts_only_sdr_bt1886_gamma() {
+        assert_eq!(system_gamma_filter("bt.1886", false), Some(true));
+        assert_eq!(system_gamma_filter("bt.1886", true), None);
+        assert_eq!(system_gamma_filter("gamma2.0", true), None);
+        assert_eq!(system_gamma_filter("pq", false), None);
+        assert_eq!(system_gamma_filter("pq", true), Some(false));
+        assert_eq!(system_gamma_filter("hlg", true), Some(false));
+        assert_eq!(system_gamma_filter("", true), None);
     }
 
     #[test]

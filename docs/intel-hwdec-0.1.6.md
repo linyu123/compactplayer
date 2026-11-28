@@ -2,7 +2,7 @@
 
 基于 Intel 0.1.6，默认请求 `hwdec=videotoolbox-copy`，不支持的编码由 mpv 回退软件解码。probe 仍关闭硬解。
 底部“解码”按钮显示实际状态，可查看编码、A/V 差值、丢帧并在播放中切换软硬解码。更换播放库沿用当前开关，重启恢复默认硬解。
-暂停、结束和空闲时定时刷新降到 10Hz，播放时保持约 60Hz。
+暂停、结束和空闲时定时刷新降到 10Hz。播放时（`codex/opengl-zero-copy` 起）由 mpv 新帧回调按视频帧率重绘。
 
 `codex/opengl-zero-copy` 分支起改为 OpenGL 零拷贝渲染（`hwdec=videotoolbox`），软件 RGBA 渲染保留为回退路径。Intel 机器上的稳定性和 CPU 占用尚未实测。
 

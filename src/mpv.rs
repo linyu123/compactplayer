@@ -46,8 +46,16 @@ pub struct Mpv {
     update: unsafe extern "C" fn(*mut c_void) -> u64,
     render_free: Free,
     destroy: Free,
+    set_update_callback:
+        unsafe extern "C" fn(*mut c_void, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void),
+    // 回调数据需活到渲染上下文释放之后。
+    waker: Option<Box<Box<dyn Fn() + Send + Sync>>>,
     opengl: bool,
     _library: Library,
+}
+
+unsafe extern "C" fn wake(data: *mut c_void) {
+    (*(data as *const Box<dyn Fn() + Send + Sync>))();
 }
 
 impl Mpv {
@@ -151,6 +159,10 @@ impl Mpv {
                 render_free: *library
                     .get(b"mpv_render_context_free\0")
                     .map_err(|error| error.to_string())?,
+                set_update_callback: *library
+                    .get(b"mpv_render_context_set_update_callback\0")
+                    .map_err(|error| error.to_string())?,
+                waker: None,
                 destroy: *library
                     .get(b"mpv_terminate_destroy\0")
                     .map_err(|error| error.to_string())?,
@@ -174,6 +186,8 @@ impl Mpv {
                 ),
                 ("keep-open", "yes"),
                 ("volume", "75"),
+                // egui 按 sRGB 合成；SDR 源的 gamma 由 Player::match_system_gamma 调整。
+                ("target-trc", "srgb"),
             ] {
                 check(option(
                     player.handle,
@@ -223,6 +237,24 @@ impl Mpv {
             ))?;
             Ok(player)
         }
+    }
+
+    /// mpv 有新画面时调用 `waker`（在 mpv 线程中，不能回调 mpv API），
+    /// 界面据此按视频帧率重绘，而不是按屏幕刷新率轮询。
+    #[allow(dead_code)]
+    pub fn set_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
+        if self.renderer.is_null() {
+            return;
+        }
+        let waker: Box<Box<dyn Fn() + Send + Sync>> = Box::new(Box::new(waker));
+        unsafe {
+            (self.set_update_callback)(
+                self.renderer,
+                Some(wake),
+                &*waker as *const Box<dyn Fn() + Send + Sync> as *mut c_void,
+            );
+        }
+        self.waker = Some(waker);
     }
 
     pub fn command(&self, values: &[&str]) -> Result<(), String> {
@@ -367,6 +399,7 @@ impl Drop for Mpv {
             if !self.renderer.is_null() {
                 (self.render_free)(self.renderer);
             }
+            self.waker = None;
             if !self.handle.is_null() {
                 (self.destroy)(self.handle);
             }

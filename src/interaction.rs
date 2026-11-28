@@ -59,6 +59,7 @@ impl Player {
         if pressed(Modifiers::NONE, Key::Escape) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+            self.cursor_visible = Some(true);
         }
         if pressed(Modifiers::COMMAND, Key::O) {
             self.open();

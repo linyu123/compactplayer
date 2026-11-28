@@ -43,6 +43,9 @@ struct Player {
     rewinding: bool,
     last_rewind: std::time::Instant,
     interaction: interaction::Interaction,
+    cursor_visible: Option<bool>,
+    /// 当前内核是否已注册新帧回调。
+    waker_installed: bool,
     mode: playback::Mode,
     eof_armed: bool,
     capture: capture::Capture,
@@ -107,6 +110,8 @@ impl Player {
             rewinding: false,
             last_rewind: std::time::Instant::now(),
             interaction: interaction::Interaction::default(),
+            cursor_visible: None,
+            waker_installed: false,
             mode: playback::Mode::default(),
             eof_armed: false,
             capture: capture::Capture::default(),
@@ -141,6 +146,8 @@ impl Player {
         let (result, gl) = Self::load_backend(&path, self.decoder.hardware, gl);
         self.gl = gl;
         self.backend = Some(result?);
+        self.waker_installed = false;
+        self.decoder.gamma_adjusted = false;
         self.runtime = path;
         Ok(())
     }
@@ -177,6 +184,11 @@ impl Player {
         let Some(path) = self.playlist.get(index).cloned() else {
             return;
         };
+        // 滤镜会改写新文件的 gamma 标签，换文件前移除，加载后按实际源重新判断。
+        if self.decoder.gamma_adjusted {
+            self.command(&["vf", "remove", "@system-gamma"]);
+            self.decoder.gamma_adjusted = false;
+        }
         if self.command(&["loadfile", &path.to_string_lossy(), "replace"]) {
             self.eof_armed = false;
             self.capture.reset_range();
@@ -349,8 +361,16 @@ impl eframe::App for Player {
         let active = self.playing
             && self.property("pause").as_deref() != Some("yes")
             && self.property("eof-reached").as_deref() != Some("yes");
-        let fps = self.decoder.fps;
-        ctx.request_repaint_after(Duration::from_millis(repaint_interval_ms(active, fps)));
+        if !self.waker_installed {
+            if let Some(backend) = &mut self.backend {
+                let ctx = ctx.clone();
+                // request_repaint() 每次会多画一帧；非零延迟只画一次，按视频帧率重绘。
+                backend.set_waker(move || ctx.request_repaint_after(Duration::from_millis(1)));
+                self.waker_installed = true;
+            }
+        }
+        // 新帧由 mpv 回调触发重绘；定时重绘只用于刷新进度和状态。
+        ctx.request_repaint_after(Duration::from_millis(repaint_interval_ms(active)));
         self.refresh_decoder();
         if self.brand.is_none() {
             if let Ok(image) = image::load_from_memory(include_bytes!("../resources/AppIcon.png")) {
@@ -439,7 +459,11 @@ impl eframe::App for Player {
                 || self.decoder.open,
         );
         self.shortcuts(ctx);
-        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(chrome));
+        // send_viewport_cmd 会立即请求重绘，每帧发送会让界面按屏幕刷新率空转。
+        if self.cursor_visible != Some(chrome) {
+            self.cursor_visible = Some(chrome);
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(chrome));
+        }
         if chrome {
             self.toolbar(ctx);
             self.controls(ctx);
@@ -597,17 +621,12 @@ impl eframe::App for Player {
     }
 }
 
-fn repaint_interval_ms(active: bool, fps: f64) -> u64 {
-    if !active {
-        return 100;
+fn repaint_interval_ms(active: bool) -> u64 {
+    if active {
+        250
+    } else {
+        100
     }
-    if !fps.is_finite() || fps <= 0.0 {
-        return 16;
-    }
-    if fps >= 60.0 {
-        return 16;
-    }
-    (1000.0 / fps).round().clamp(16.0, 100.0) as u64
 }
 
 fn timestamp(seconds: f64) -> String {
@@ -625,13 +644,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repaint_interval_matches_source_fps() {
-        assert_eq!(repaint_interval_ms(false, 60.0), 100);
-        assert_eq!(repaint_interval_ms(true, 0.0), 16);
-        assert_eq!(repaint_interval_ms(true, 24.0), 42);
-        assert_eq!(repaint_interval_ms(true, 30.0), 33);
-        assert_eq!(repaint_interval_ms(true, 60.0), 16);
-        assert_eq!(repaint_interval_ms(true, 120.0), 16);
+    fn repaint_interval_only_refreshes_status() {
+        assert_eq!(repaint_interval_ms(false), 100);
+        assert_eq!(repaint_interval_ms(true), 250);
     }
 
     #[test]
