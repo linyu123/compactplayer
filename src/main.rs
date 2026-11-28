@@ -1,10 +1,12 @@
 mod capture;
+mod decoder;
 mod interaction;
 mod macos_open;
 mod media;
 mod mpv;
 mod playback;
 mod ui;
+mod video_layout;
 
 use eframe::egui;
 use std::path::PathBuf;
@@ -38,6 +40,7 @@ struct Player {
     mode: playback::Mode,
     eof_armed: bool,
     capture: capture::Capture,
+    decoder: decoder::Decoder,
 }
 
 impl Player {
@@ -92,6 +95,7 @@ impl Player {
             mode: playback::Mode::default(),
             eof_armed: false,
             capture: capture::Capture::default(),
+            decoder: decoder::Decoder::default(),
         }
     }
 
@@ -283,7 +287,11 @@ impl Player {
 
 impl eframe::App for Player {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_millis(16));
+        let active = self.playing
+            && self.property("pause").as_deref() != Some("yes")
+            && self.property("eof-reached").as_deref() != Some("yes");
+        ctx.request_repaint_after(Duration::from_millis(if active { 16 } else { 100 }));
+        self.refresh_decoder();
         if self.brand.is_none() {
             if let Ok(image) = image::load_from_memory(include_bytes!("../resources/AppIcon.png")) {
                 let image = image
@@ -365,7 +373,10 @@ impl eframe::App for Player {
             ctx,
             fullscreen,
             active,
-            self.notice.is_some() || self.capture.open || self.capture.image_open,
+            self.notice.is_some()
+                || self.capture.open
+                || self.capture.image_open
+                || self.decoder.open,
         );
         self.shortcuts(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(chrome));
@@ -375,22 +386,21 @@ impl eframe::App for Player {
         }
         self.playlist_panel(ctx);
         self.capture_window(ctx);
+        self.decoder_window(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
                 let available = ui.available_size();
-                let render_size = if self.rotation % 180 == 90 {
-                    egui::vec2(available.y, available.x)
-                } else {
-                    available
-                };
-                let scale = (1920.0 / render_size.x.max(1.0))
-                    .min(1080.0 / render_size.y.max(1.0))
-                    .min(1.0);
-                let size = [
-                    (render_size.x * scale).max(1.0) as usize,
-                    (render_size.y * scale).max(1.0) as usize,
-                ];
+                let (render_size, size) = video_layout::layout(
+                    available,
+                    self.decoder.source_size,
+                    if self.decoder.retina {
+                        ctx.pixels_per_point()
+                    } else {
+                        1.0
+                    },
+                    self.rotation % 180 == 90,
+                );
                 let resized = self.size != size;
                 self.size = size;
                 self.pixels.resize(size[0] * size[1] * 4, 0);
@@ -403,9 +413,10 @@ impl eframe::App for Player {
                             resized || self.texture.is_none(),
                         ) {
                             Ok(true) => {
-                                let image = std::sync::Arc::new(
-                                    egui::ColorImage::from_rgba_unmultiplied(size, &self.pixels),
-                                );
+                                let image = std::sync::Arc::new(video_layout::opaque_frame(
+                                    size,
+                                    &self.pixels,
+                                ));
                                 self.capture.frame = Some(image.clone());
                                 let image = egui::ImageData::Color(image);
                                 if let Some(texture) = &mut self.texture {

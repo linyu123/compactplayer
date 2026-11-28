@@ -1,0 +1,216 @@
+use crate::Player;
+use eframe::egui;
+use std::time::{Duration, Instant};
+
+pub struct Decoder {
+    pub open: bool,
+    pub hardware: bool,
+    pub label: String,
+    pub source_size: [f32; 2],
+    pub retina: bool,
+    stats: String,
+    refresh: Instant,
+}
+
+impl Default for Decoder {
+    fn default() -> Self {
+        Self {
+            open: false,
+            hardware: true,
+            label: "解码：等待视频".into(),
+            source_size: [1920.0, 1080.0],
+            retina: true,
+            stats: String::new(),
+            refresh: Instant::now() - Duration::from_secs(1),
+        }
+    }
+}
+
+fn hardware_decoder_active(actual: &str) -> bool {
+    actual.starts_with("videotoolbox")
+}
+
+fn effective_source_size(playing: bool, video: &str, width: f32, height: f32) -> [f32; 2] {
+    if !playing || video.is_empty() {
+        [1920.0, 1080.0]
+    } else if width > 0.0 && height > 0.0 {
+        [width, height]
+    } else {
+        [1920.0, 1080.0]
+    }
+}
+
+impl Player {
+    pub fn refresh_decoder(&mut self) {
+        if self.decoder.refresh.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        self.decoder.refresh = Instant::now();
+        let actual = self
+            .property("hwdec-current")
+            .unwrap_or_else(|| "no".into());
+        let video = self.property("video-codec").unwrap_or_default();
+        let width = self.number("video-out-params/dw") as f32;
+        let height = self.number("video-out-params/dh") as f32;
+        self.decoder.source_size = effective_source_size(self.playing, &video, width, height);
+        self.decoder.label = if !self.playing || video.is_empty() {
+            "解码：等待视频".into()
+        } else if hardware_decoder_active(&actual) {
+            "解码：VideoToolbox 硬解".into()
+        } else if self.decoder.hardware {
+            "解码：软件（硬解不可用）".into()
+        } else {
+            "解码：软件".into()
+        };
+        if self.decoder.open {
+            let mut lines = vec![
+                format!(
+                    "轻巧播放器 {} / {}",
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::consts::ARCH
+                ),
+                format!("请求硬解：{}", self.decoder.hardware),
+                format!("实际解码：{actual}"),
+                format!("视频编码：{video}"),
+                format!(
+                    "画面输出：Retina 软件 RGBA → 纹理，{}×{}，最高 4K 像素预算",
+                    self.size[0], self.size[1]
+                ),
+            ];
+            for (label, name) in [
+                ("视频尺寸", "video-params"),
+                ("源帧率", "container-fps"),
+                ("A/V 差值（秒）", "avsync"),
+                ("解码丢帧", "decoder-frame-drop-count"),
+                ("输出丢帧", "frame-drop-count"),
+            ] {
+                lines.push(format!(
+                    "{label}：{}",
+                    self.property(name).unwrap_or_else(|| "暂无数据".into())
+                ));
+            }
+            self.decoder.stats = lines.join("\n");
+        }
+    }
+
+    pub fn decoder_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.decoder.open;
+        egui::Window::new("解码设置 · Intel 优化测试版")
+            .open(&mut open)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                let mut hardware = self.decoder.hardware;
+                if ui
+                    .checkbox(&mut hardware, "优先使用 VideoToolbox 硬件解码")
+                    .changed()
+                {
+                    if self.command(&[
+                        "set",
+                        "hwdec",
+                        if hardware { "videotoolbox-copy" } else { "no" },
+                    ]) {
+                        self.decoder.hardware = hardware;
+                        self.decoder.refresh = Instant::now() - Duration::from_secs(1);
+                    }
+                }
+                ui.label("可在播放中切换对比；切换可能短暂停顿。不支持的编码自动回退软件。");
+                ui.label("旧 Intel 优先测试 H.264；HEVC、VP9、AV1 的硬件支持取决于机器。");
+                ui.label("设置仅在本次运行有效。若画面异常，请关闭硬解后重试。");
+                ui.checkbox(
+                    &mut self.decoder.retina,
+                    "Retina 清晰显示（关闭可降低渲染分辨率）",
+                );
+                ui.label(
+                    "清晰模式渲染更多像素，软件输出下可能增加 CPU；不在 CPU 上放大低分辨率源。",
+                );
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(&self.decoder.stats).monospace());
+                    });
+                if ui.button("复制诊断信息").clicked() {
+                    ctx.copy_text(self.decoder.stats.clone());
+                }
+            });
+        self.decoder.open = open;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_videotoolbox_status_variants() {
+        assert!(hardware_decoder_active("videotoolbox-copy"));
+        assert!(hardware_decoder_active("videotoolbox"));
+        assert!(!hardware_decoder_active("no"));
+        assert!(!hardware_decoder_active(""));
+    }
+
+    #[test]
+    fn resets_source_size_when_video_is_inactive() {
+        assert_eq!(
+            effective_source_size(false, "h264", 1080.0, 1920.0),
+            [1920.0, 1080.0]
+        );
+        assert_eq!(
+            effective_source_size(true, "", 1080.0, 1920.0),
+            [1920.0, 1080.0]
+        );
+        assert_eq!(
+            effective_source_size(true, "h264", 1080.0, 1920.0),
+            [1080.0, 1920.0]
+        );
+        assert_eq!(
+            effective_source_size(true, "h264", 0.0, 0.0),
+            [1920.0, 1080.0]
+        );
+    }
+
+    #[test]
+    #[ignore = "requires libmpv and COMPACT_H264_VIDEO"]
+    fn switches_hardware_and_software_without_losing_playback() {
+        let mut player = Player::new();
+        player.playlist.push(std::path::PathBuf::from(
+            std::env::var_os("COMPACT_H264_VIDEO").unwrap(),
+        ));
+        player.play(0);
+        player.command(&["set", "mute", "yes"]);
+        let mut pixels = vec![0; 320 * 180 * 4];
+        for (option, expected) in [
+            ("videotoolbox-copy", "videotoolbox-copy"),
+            ("no", "no"),
+            ("videotoolbox-copy", "videotoolbox-copy"),
+        ] {
+            assert!(player.command(&["set", "hwdec", option]));
+            let start = Instant::now();
+            loop {
+                player
+                    .backend
+                    .as_ref()
+                    .unwrap()
+                    .render(320, 180, &mut pixels, true)
+                    .unwrap();
+                if match player.property("hwdec-current") {
+                    Some(actual) if expected == "no" => actual == "no",
+                    Some(actual) => hardware_decoder_active(&actual),
+                    None => false,
+                } && pixels
+                    .chunks_exact(4)
+                    .any(|p| p[0] > 20 || p[1] > 20 || p[2] > 20)
+                {
+                    break;
+                }
+                assert!(
+                    start.elapsed() < Duration::from_secs(5),
+                    "实际解码：{:?}",
+                    player.property("hwdec-current")
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        player.command(&["stop"]);
+    }
+}

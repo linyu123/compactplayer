@@ -1,5 +1,8 @@
 # Compact Player
 
+Intel 0.1.6 硬解测试分支：默认优先 VideoToolbox 硬解，底部“解码”入口可切换软件解码并查看实际状态。
+对照步骤与验证范围见 [Intel 硬解测试说明](docs/intel-hwdec-0.1.6.md)。
+
 面向 macOS 的 Rust 播放器原型，采用接近 PotPlayer 的紧凑深色布局。
 
 ## libmpv 集成进度
@@ -35,7 +38,7 @@ bash scripts/install-libmpv.sh x86_64
 bash scripts/package-app.sh x86_64
 ```
 
-输出为 `dist/CompactPlayer-0.1.6-x86_64.dmg`，应用位于 `dist/x86_64/轻巧播放器.app`。
+测试包输出为 `dist/CompactPlayer-0.1.6-x86_64-hwdec-retina-test.dmg`，应用位于 `dist/x86_64/轻巧播放器.app`。
 构建时设置 `MACOSX_DEPLOYMENT_TARGET=12.0`，应用声明最低 macOS 12.0。
 Intel 运行库使用同一发行的 amd64 构建，下载按固定 SHA-256 校验。
 在 Apple Silicon 上可交叉编译；运行 Intel 二进制需要 Rosetta。
@@ -73,7 +76,7 @@ Apple Silicon 包使用 `bash scripts/package-app.sh arm64`，两种包和运行
 
 ## 应用打包
 
-独立应用打包：`bash scripts/package-app.sh x86_64`，输出 `dist/CompactPlayer-0.1.6-x86_64.dmg`。
+独立应用打包：`bash scripts/package-app.sh x86_64`，输出 `dist/CompactPlayer-0.1.6-x86_64-hwdec-retina-test.dmg`。
 Intel 包适用于 macOS 12+，包含播放运行库和图标，使用本地临时签名，尚未公证。
 
 ## 0.1.4 全屏与操作体验（开发分支）

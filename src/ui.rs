@@ -62,7 +62,7 @@ impl Player {
                             .add_filter("播放内核动态库", &["dylib"])
                             .pick_file()
                         {
-                            match mpv::Mpv::new(&path) {
+                            match mpv::Mpv::with_hwdec(&path, self.decoder.hardware) {
                                 Ok(backend) => {
                                     self.runtime = path;
                                     self.backend = Some(backend);
@@ -251,6 +251,13 @@ impl Player {
                         }
                     });
                 });
+                if ui
+                    .small_button(&self.decoder.label)
+                    .on_hover_text("点击查看解码设置、硬解状态和播放统计")
+                    .clicked()
+                {
+                    self.decoder.open = true;
+                }
                 if self.status.contains("错误")
                     || self.status.contains("失败")
                     || self.status.contains("不可用")

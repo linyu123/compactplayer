@@ -56,14 +56,18 @@ impl Mpv {
     }
 
     pub fn probe(path: &Path) -> Result<Self, String> {
-        Self::create(path, true)
+        Self::create(path, true, false)
     }
 
     pub fn new(path: &Path) -> Result<Self, String> {
-        Self::create(path, false)
+        Self::with_hwdec(path, true)
     }
 
-    fn create(path: &Path, probe: bool) -> Result<Self, String> {
+    pub fn with_hwdec(path: &Path, hardware: bool) -> Result<Self, String> {
+        Self::create(path, false, hardware)
+    }
+
+    fn create(path: &Path, probe: bool, hardware: bool) -> Result<Self, String> {
         unsafe {
             let library = Library::new(path).map_err(|error| error.to_string())?;
             let create = *library
@@ -111,7 +115,7 @@ impl Mpv {
             for (name, value) in [
                 ("config", "no"),
                 ("vo", if probe { "null" } else { "libmpv" }),
-                ("hwdec", "no"),
+                ("hwdec", if hardware { "videotoolbox-copy" } else { "no" }),
                 ("keep-open", "yes"),
                 ("volume", "75"),
             ] {
