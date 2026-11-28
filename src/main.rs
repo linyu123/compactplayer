@@ -1,5 +1,6 @@
 mod capture;
 mod decoder;
+mod gl_video;
 mod interaction;
 mod macos_open;
 mod media;
@@ -23,6 +24,10 @@ struct Player {
     playlist: Vec<PathBuf>,
     selected: Option<usize>,
     texture: Option<egui::TextureHandle>,
+    /// 非空时使用 OpenGL 零拷贝渲染，否则回退软件 RGBA 路径。
+    gl: Option<std::sync::Arc<eframe::glow::Context>>,
+    gl_video: Option<gl_video::GlVideo>,
+    gl_ready: bool,
     video_image: Option<std::sync::Arc<egui::ColorImage>>,
     brand: Option<egui::TextureHandle>,
     pixels: Vec<u8>,
@@ -45,7 +50,12 @@ struct Player {
 }
 
 impl Player {
+    #[cfg(test)]
     fn new() -> Self {
+        Self::create(None)
+    }
+
+    fn create(gl: Option<std::sync::Arc<eframe::glow::Context>>) -> Self {
         let path = std::env::var_os("COMPACT_PLAYER_LIBMPV")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -65,7 +75,7 @@ impl Player {
                     "runtime/libmpv-libs_v0.7.3_macos-arm64-video-default/libmpv.dylib"
                 })
             });
-        let result = mpv::Mpv::new(&path);
+        let (result, gl) = Self::load_backend(&path, true, gl);
         let status = match &result {
             Ok(backend) => format!(
                 "准备就绪 / {}",
@@ -79,6 +89,9 @@ impl Player {
             playlist: Vec::new(),
             selected: None,
             texture: None,
+            gl,
+            gl_video: None,
+            gl_ready: false,
             video_image: None,
             brand: None,
             pixels: Vec::new(),
@@ -99,6 +112,42 @@ impl Player {
             capture: capture::Capture::default(),
             decoder: decoder::Decoder::default(),
         }
+    }
+
+    /// 有 OpenGL 上下文时优先创建零拷贝内核，失败则回退软件渲染。
+    fn load_backend(
+        path: &std::path::Path,
+        hardware: bool,
+        gl: Option<std::sync::Arc<eframe::glow::Context>>,
+    ) -> (
+        Result<mpv::Mpv, String>,
+        Option<std::sync::Arc<eframe::glow::Context>>,
+    ) {
+        if gl.is_some() {
+            if let Ok(backend) = mpv::Mpv::with_opengl(path, hardware) {
+                return (Ok(backend), gl);
+            }
+        }
+        (mpv::Mpv::with_hwdec(path, hardware), None)
+    }
+
+    fn replace_backend(&mut self, path: PathBuf) -> Result<(), String> {
+        // 旧内核的 OpenGL 渲染上下文必须在当前 GL 上下文中释放，先于新内核创建。
+        self.backend = None;
+        let gl = self
+            .gl
+            .take()
+            .or_else(|| self.gl_video.as_ref().map(|video| video.gl().clone()));
+        let (result, gl) = Self::load_backend(&path, self.decoder.hardware, gl);
+        self.gl = gl;
+        self.backend = Some(result?);
+        self.runtime = path;
+        Ok(())
+    }
+
+    fn clear_video(&mut self) {
+        self.texture = None;
+        self.gl_ready = false;
     }
 
     fn command(&mut self, values: &[&str]) -> bool {
@@ -138,7 +187,7 @@ impl Player {
             self.rewinding = false;
             self.selected = Some(index);
             self.playing = true;
-            self.texture = None;
+            self.clear_video();
             self.capture.frame = None;
             self.status = path
                 .file_name()
@@ -288,7 +337,15 @@ impl Player {
 }
 
 impl eframe::App for Player {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // 退出时 GL 上下文仍有效，按顺序释放 mpv 渲染上下文和纹理。
+        self.backend = None;
+        if let Some(video) = self.gl_video.take() {
+            video.destroy();
+        }
+    }
+
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let active = self.playing
             && self.property("pause").as_deref() != Some("yes")
             && self.property("eof-reached").as_deref() != Some("yes");
@@ -406,8 +463,39 @@ impl eframe::App for Player {
                 );
                 let resized = self.size != size;
                 self.size = size;
-                self.pixels.resize(size[0] * size[1] * 4, 0);
-                if self.playing {
+                let opengl = self.backend.as_ref().is_some_and(mpv::Mpv::is_opengl);
+                if opengl && self.gl_video.is_none() {
+                    if let Some(gl) = self.gl.clone() {
+                        match gl_video::GlVideo::new(gl, frame) {
+                            Ok(video) => self.gl_video = Some(video),
+                            Err(error) => self.status = error,
+                        }
+                    }
+                }
+                if opengl {
+                    self.pixels = Vec::new();
+                    if let (true, Some(backend), Some(video)) =
+                        (self.playing, &self.backend, &mut self.gl_video)
+                    {
+                        let result = video.resize(size).and_then(|resized| {
+                            backend.render_opengl(
+                                video.fbo(),
+                                size[0],
+                                size[1],
+                                resized || !self.gl_ready,
+                            )
+                        });
+                        video.finish();
+                        match result {
+                            Ok(true) => self.gl_ready = true,
+                            Ok(false) => {}
+                            Err(error) => self.status = error,
+                        }
+                    }
+                } else {
+                    self.pixels.resize(size[0] * size[1] * 4, 0);
+                }
+                if self.playing && !opengl {
                     if let Some(backend) = &self.backend {
                         match backend.render(
                             size[0],
@@ -455,7 +543,17 @@ impl eframe::App for Player {
                         }
                     }
                 }
-                if let Some(texture) = &self.texture {
+                let texture = match (&self.gl_video, &self.texture) {
+                    (Some(video), _) if self.gl_ready => Some(egui::load::SizedTexture::new(
+                        video.id,
+                        egui::vec2(video.size[0] as f32, video.size[1] as f32),
+                    )),
+                    (_, Some(texture)) if !opengl => {
+                        Some(egui::load::SizedTexture::from_handle(texture))
+                    }
+                    _ => None,
+                };
+                if let Some(texture) = texture {
                     let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click());
                     if response.double_clicked() {
                         self.toggle_fullscreen(ctx);
@@ -694,7 +792,12 @@ fn main() -> eframe::Result {
                 }
                 creation.egui_ctx.set_fonts(fonts);
             }
-            let mut player = Player::new();
+            // COMPACT_PLAYER_RENDER=software 强制旧的软件渲染路径，便于对比和排查。
+            let gl = creation
+                .gl
+                .clone()
+                .filter(|_| std::env::var("COMPACT_PLAYER_RENDER").as_deref() != Ok("software"));
+            let mut player = Player::create(gl);
             player.add(
                 std::env::args_os()
                     .skip(1)

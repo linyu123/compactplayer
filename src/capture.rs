@@ -569,6 +569,10 @@ impl Player {
                     if ui.button("保存当前帧（PNG）…").clicked() {
                         self.command(&["set", "pause", "yes"]);
                         // 在进入系统保存对话框前冻结实际已经显示的帧。
+                        // OpenGL 模式下画面只在显存中，仅此时读回一次。
+                        if let (Some(video), true) = (&self.gl_video, self.gl_ready) {
+                            self.capture.frame = Some(std::sync::Arc::new(video.read()));
+                        }
                         let frozen = self.capture.frame.clone();
                         let rotation = self.rotation;
                         if let Some(path) = rfd::FileDialog::new()

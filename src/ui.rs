@@ -1,4 +1,4 @@
-use crate::{mpv, timestamp, Player};
+use crate::{timestamp, Player};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 const ACCENT: Color32 = Color32::from_rgb(76, 200, 234);
@@ -62,12 +62,10 @@ impl Player {
                             .add_filter("播放内核动态库", &["dylib"])
                             .pick_file()
                         {
-                            match mpv::Mpv::with_hwdec(&path, self.decoder.hardware) {
-                                Ok(backend) => {
-                                    self.runtime = path;
-                                    self.backend = Some(backend);
+                            match self.replace_backend(path) {
+                                Ok(()) => {
                                     self.playing = false;
-                                    self.texture = None;
+                                    self.clear_video();
                                     self.status = "播放内核已就绪".into();
                                 }
                                 Err(error) => self.status = error,
@@ -330,7 +328,7 @@ impl Player {
                                 self.selected = None;
                                 self.playing = false;
                                 self.rewinding = false;
-                                self.texture = None;
+                                self.clear_video();
                                 self.status = "播放列表已清空".into();
                             }
                         }
@@ -399,7 +397,7 @@ impl Player {
                             self.selected = None;
                             self.playing = false;
                             self.rewinding = false;
-                            self.texture = None;
+                            self.clear_video();
                             self.status = "当前播放项已从列表删除".into();
                         } else if let Some(selected) = self.selected {
                             if index < selected {

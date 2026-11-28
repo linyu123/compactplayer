@@ -15,7 +15,8 @@ Intel 0.1.6 硬解测试分支：默认优先 VideoToolbox 硬解，底部“解
 
 检查命令：`cargo run --bin check_libmpv -- runtime/libmpv-libs_v0.7.3_macos-arm64-video-default/libmpv.dylib`。
 可追加媒体路径验证无画面、无音频输出的播放进度。
-GUI 已切换为进程内 libmpv，通过软件渲染 API 将 RGBA 帧上传到 egui 纹理，视频显示在主窗口。
+GUI 使用进程内 libmpv。默认通过 OpenGL 渲染 API 直接画到 egui 的原生纹理，配合 `hwdec=videotoolbox` 零拷贝硬解，画面不经过 CPU。
+OpenGL 内核创建失败时回退软件渲染（RGBA 缓冲区上传纹理 + `videotoolbox-copy`）；设置 `COMPACT_PLAYER_RENDER=software` 可强制使用软件渲染，便于对比。
 
 ## 运行
 
@@ -57,8 +58,6 @@ Apple Silicon 包使用 `bash scripts/package-app.sh arm64`，两种包和运行
 - 空格暂停，左右方向键跳转五秒；快捷键在控制窗口有焦点时生效。
 - 关闭窗口时释放渲染上下文及 libmpv 实例。
 
-当前采用软件解码和软件渲染，渲染缓冲上限为 1920×1080，会有 CPU 拷贝开销。
-尚未实现 GPU 渲染、硬件解码、自动连播、断点续播或独立应用打包。
 渲染及控制检查：`cargo run --bin check_render -- /path/libmpv.dylib /path/test-video.mp4`。
 此检查需要含彩色画面且时长超过一秒的测试视频。
 

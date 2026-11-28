@@ -81,8 +81,18 @@ impl Player {
                 format!("实际解码：{actual}"),
                 format!("视频编码：{video}"),
                 format!(
-                    "画面输出：Retina 软件 RGBA → 纹理，{}×{}，最高 4K 像素预算",
-                    self.size[0], self.size[1]
+                    "画面输出：{}，{}×{}，最高 4K 像素预算",
+                    if self
+                        .backend
+                        .as_ref()
+                        .is_some_and(crate::mpv::Mpv::is_opengl)
+                    {
+                        "OpenGL 零拷贝纹理"
+                    } else {
+                        "软件 RGBA → 纹理"
+                    },
+                    self.size[0],
+                    self.size[1]
                 ),
             ];
             for (label, name) in [
@@ -112,11 +122,11 @@ impl Player {
                     .checkbox(&mut hardware, "优先使用 VideoToolbox 硬件解码")
                     .changed()
                 {
-                    if self.command(&[
-                        "set",
-                        "hwdec",
-                        if hardware { "videotoolbox-copy" } else { "no" },
-                    ]) {
+                    let option = match (&self.backend, hardware) {
+                        (Some(backend), true) => backend.hardware_decoder(),
+                        _ => "no",
+                    };
+                    if self.command(&["set", "hwdec", option]) {
                         self.decoder.hardware = hardware;
                         self.decoder.refresh = Instant::now() - Duration::from_secs(1);
                     }

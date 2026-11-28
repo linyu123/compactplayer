@@ -30,9 +30,9 @@ cargo test --bin compact-player <test_name>     # 运行单个测试
 
 ## 架构
 
-- **`mpv.rs`**：用 `libloading` 动态加载 libmpv 的 C API（不链接），封装 `command`、`property`、`render`。渲染走 mpv 软件渲染 API，输出 RGBA 缓冲区。`probe` 模式使用 `vo=null` 且关闭硬解，用于检测媒体；正常实例默认 `hwdec=videotoolbox-copy`，不支持的编码由 mpv 回退软件解码。
+- **`mpv.rs`**：用 `libloading` 动态加载 libmpv 的 C API（不链接），封装 `command`、`property`、`render`（软件 RGBA）和 `render_opengl`（渲染到 FBO）。`with_opengl` 创建 OpenGL 渲染上下文并使用 `hwdec=videotoolbox` 零拷贝；`with_hwdec` 为软件渲染，硬解为 `videotoolbox-copy`。切换硬解时用 `hardware_decoder()` 取当前模式对应的选项。`probe` 模式使用 `vo=null` 且关闭硬解，用于检测媒体。不支持的编码由 mpv 回退软件解码。
 - **`main.rs`**：`Player` 结构体持有全部状态并实现 `eframe::App`。其他模块大多通过 `impl Player { ... }` 为它追加方法（`ui.rs` 的工具栏/控制栏/播放列表、`interaction.rs` 的快捷键与全屏控制栏自动隐藏、`decoder.rs` 的解码状态窗口、`capture.rs` 的截图/导出窗口），而不是独立组件。
-- **渲染流程**：每帧 `update` 中 `video_layout::layout` 按有效视频区域和物理像素（Retina）计算渲染尺寸，不超过源像素，上限 4K；`backend.render` 填充 `pixels`，`opaque_frame` 转为不透明 RGB 后上传为 egui 纹理。旋转在纹理层完成，没有使用 mpv 的旋转（会触发 libmpv 裁剪断言崩溃）。播放时约 60Hz 重绘，暂停/空闲时降到 10Hz。仍是 CPU 拷贝路径，没有 GPU 直绘。
+- **渲染流程**：每帧 `update` 中 `video_layout::layout` 按有效视频区域和物理像素（Retina）计算渲染尺寸，不超过源像素，上限 4K；默认路径（`gl_video.rs`）：mpv 在 `update` 中直接渲染到 `GlVideo` 的 FBO 纹理，该纹理通过 `register_native_glow_texture` 交给 egui 显示；纹理格式需与 egui_glow 的 sRGB 判断一致，否则颜色发灰。截图时才用 `GlVideo::read` 读回。mpv 渲染上下文必须在 GL 上下文有效时释放（`on_exit`、切换内核时先释放旧内核）。回退路径：`backend.render` 填充 `pixels`，`opaque_frame` 转为不透明 RGB 后上传为 egui 纹理；`COMPACT_PLAYER_RENDER=software` 强制回退。旋转在纹理层完成，没有使用 mpv 的旋转（会触发 libmpv 裁剪断言崩溃）。播放时约 60Hz 重绘，暂停/空闲时降到 10Hz。`src/bin/` 诊断程序和 `#[ignore]` 测试只走软件渲染路径。
 - **libmpv 路径解析**（`Player::new`）：`COMPACT_PLAYER_LIBMPV` 环境变量 → 应用包内 `Contents/Frameworks/libmpv.dylib` → 项目 `runtime/libmpv-libs_v0.7.3_macos-{arm64|amd64}-video-default/`。运行中可通过“播放内核”按钮切换。
 - **`media.rs`**：按扩展名筛选媒体，扫描同目录视频（不递归），路径规范化去重，按文件名自然排序。扫描在后台线程运行，结果经 `mpsc` 通道（`Player::intake`）回到 UI 线程。
 - **`capture.rs`**：截图直接保存当前显示的缓冲区（含字幕）。片段导出和删除中间广告通过子进程调用外部 FFmpeg（自动查找 Homebrew 路径或由用户选择），后台线程读取进度并支持取消，取消或失败时清理临时文件，不覆盖已有文件。FFmpeg 不打包进应用。

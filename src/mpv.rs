@@ -12,6 +12,30 @@ type Command = unsafe extern "C" fn(*mut c_void, *const *const c_char) -> c_int;
 type Get = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_char;
 type Render = unsafe extern "C" fn(*mut c_void, *mut Parameter) -> c_int;
 
+#[repr(C)]
+struct OpenGlInit {
+    get_proc_address: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
+    context: *mut c_void,
+}
+
+#[repr(C)]
+struct OpenGlFbo {
+    fbo: c_int,
+    width: c_int,
+    height: c_int,
+    internal_format: c_int,
+}
+
+extern "C" {
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+}
+
+// eframe 已在进程内加载 OpenGL.framework，直接从全局符号表取函数地址。
+unsafe extern "C" fn gl_proc_address(_: *mut c_void, name: *const c_char) -> *mut c_void {
+    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+    dlsym(RTLD_DEFAULT, name)
+}
+
 pub struct Mpv {
     handle: *mut c_void,
     renderer: *mut c_void,
@@ -22,6 +46,7 @@ pub struct Mpv {
     update: unsafe extern "C" fn(*mut c_void) -> u64,
     render_free: Free,
     destroy: Free,
+    opengl: bool,
     _library: Library,
 }
 
@@ -56,18 +81,41 @@ impl Mpv {
     }
 
     pub fn probe(path: &Path) -> Result<Self, String> {
-        Self::create(path, true, false)
+        Self::create(path, true, false, false)
     }
 
+    #[allow(dead_code)]
     pub fn new(path: &Path) -> Result<Self, String> {
         Self::with_hwdec(path, true)
     }
 
     pub fn with_hwdec(path: &Path, hardware: bool) -> Result<Self, String> {
-        Self::create(path, false, hardware)
+        Self::create(path, false, hardware, false)
     }
 
-    fn create(path: &Path, probe: bool, hardware: bool) -> Result<Self, String> {
+    /// OpenGL 渲染：硬解帧以 IOSurface 直接交给 GPU，无需拷回内存。
+    /// 调用时当前线程必须持有 OpenGL 上下文。
+    #[allow(dead_code)]
+    pub fn with_opengl(path: &Path, hardware: bool) -> Result<Self, String> {
+        Self::create(path, false, hardware, true)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_opengl(&self) -> bool {
+        self.opengl
+    }
+
+    /// 当前渲染方式下的硬解选项：OpenGL 零拷贝，软件渲染需拷回内存。
+    #[allow(dead_code)]
+    pub fn hardware_decoder(&self) -> &'static str {
+        if self.opengl {
+            "videotoolbox"
+        } else {
+            "videotoolbox-copy"
+        }
+    }
+
+    fn create(path: &Path, probe: bool, hardware: bool, opengl: bool) -> Result<Self, String> {
         unsafe {
             let library = Library::new(path).map_err(|error| error.to_string())?;
             let create = *library
@@ -106,6 +154,7 @@ impl Mpv {
                 destroy: *library
                     .get(b"mpv_terminate_destroy\0")
                     .map_err(|error| error.to_string())?,
+                opengl,
                 _library: library,
             };
             player.handle = create();
@@ -115,7 +164,14 @@ impl Mpv {
             for (name, value) in [
                 ("config", "no"),
                 ("vo", if probe { "null" } else { "libmpv" }),
-                ("hwdec", if hardware { "videotoolbox-copy" } else { "no" }),
+                (
+                    "hwdec",
+                    match (hardware, opengl) {
+                        (false, _) => "no",
+                        (true, true) => "videotoolbox",
+                        (true, false) => "videotoolbox-copy",
+                    },
+                ),
                 ("keep-open", "yes"),
                 ("volume", "75"),
             ] {
@@ -138,10 +194,22 @@ impl Mpv {
             if probe {
                 return Ok(player);
             }
+            let mut init = OpenGlInit {
+                get_proc_address: gl_proc_address,
+                context: std::ptr::null_mut(),
+            };
             let mut parameters = [
                 Parameter {
                     kind: 1,
-                    data: c"sw".as_ptr().cast_mut().cast(),
+                    data: if opengl {
+                        c"opengl".as_ptr().cast_mut().cast()
+                    } else {
+                        c"sw".as_ptr().cast_mut().cast()
+                    },
+                },
+                Parameter {
+                    kind: if opengl { 2 } else { 0 },
+                    data: (&mut init as *mut OpenGlInit).cast(),
                 },
                 Parameter {
                     kind: 0,
@@ -190,6 +258,9 @@ impl Mpv {
         pixels: &mut [u8],
         force: bool,
     ) -> Result<bool, String> {
+        if self.opengl {
+            return Err("OpenGL 渲染模式不支持软件缓冲区".into());
+        }
         if width == 0 || height == 0 || pixels.len() != width * height * 4 {
             return Err("视频缓冲区无效".into());
         }
@@ -216,6 +287,56 @@ impl Mpv {
                 Parameter {
                     kind: 20,
                     data: pixels.as_mut_ptr().cast(),
+                },
+                Parameter {
+                    kind: 12,
+                    data: (&mut block as *mut c_int).cast(),
+                },
+                Parameter {
+                    kind: 0,
+                    data: std::ptr::null_mut(),
+                },
+            ];
+            check((self.render)(self.renderer, parameters.as_mut_ptr()))?;
+            Ok(true)
+        }
+    }
+}
+
+impl Mpv {
+    /// 渲染到 OpenGL framebuffer。mpv 默认（不翻转）输出第 0 行即画面顶部，
+    /// 与 egui 纹理坐标一致。
+    #[allow(dead_code)]
+    pub fn render_opengl(
+        &self,
+        fbo: u32,
+        width: usize,
+        height: usize,
+        force: bool,
+    ) -> Result<bool, String> {
+        if !self.opengl || width == 0 || height == 0 {
+            return Err("OpenGL 渲染参数无效".into());
+        }
+        unsafe {
+            if (self.update)(self.renderer) & 1 == 0 && !force {
+                return Ok(false);
+            }
+            let mut target = OpenGlFbo {
+                fbo: fbo as c_int,
+                width: width as c_int,
+                height: height as c_int,
+                internal_format: 0,
+            };
+            let mut flip: c_int = 0;
+            let mut block: c_int = 0;
+            let mut parameters = [
+                Parameter {
+                    kind: 3,
+                    data: (&mut target as *mut OpenGlFbo).cast(),
+                },
+                Parameter {
+                    kind: 4,
+                    data: (&mut flip as *mut c_int).cast(),
                 },
                 Parameter {
                     kind: 12,
